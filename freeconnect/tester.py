@@ -24,6 +24,11 @@ FREEZE_PROBE_BYTES = 24_000
 VOICE_SERVICES = {"discord"}
 # Выше этого RTT (мс) считаем UDP-путь задушенным (голос будет рваться).
 VOICE_RTT_MAX_MS = 700.0
+# Доля потерянных мелких STUN-проб, выше которой путь считаем негодным для голоса.
+VOICE_LOSS_MAX = 0.4
+# Размер «большого» STUN-запроса (байт) — эмулирует видео-пакет демонстрации экрана.
+# Если мелкие проходят, а такие теряются — путь давится на больших UDP.
+VOICE_BIG_BYTES = 1000
 # Цели по сервисам (host, путь для GET). Путь выбран так, чтобы отдавалось тело.
 DEFAULT_TARGETS: dict[str, list[tuple[str, str]]] = {
     "discord": [
@@ -64,6 +69,8 @@ class ServiceResult:
     # голосом — ровно тот баг, что ловил пользователь.
     voice_ok: bool | None = None
     voice_rtt: float = -1.0
+    voice_conf: str = ""      # "high" | "low" — уверенность авто-проверки голоса
+    voice_detail: str = ""    # человекочитаемые метрики (loss/jitter/big) для логов
 
     @property
     def sites_ok(self) -> bool:
@@ -202,27 +209,111 @@ def stun_rtt(server: tuple[str, int] | None = None, timeout: float = 2.0) -> flo
     return None
 
 
-def check_voice(attempts: int = 3, timeout: float = 2.0) -> tuple[bool, float]:
-    """Оценивает здоровье UDP-пути голоса через STUN (тот же сигнал, что у монитора).
+def _stun_packet(pad: int = 0) -> tuple[bytes, bytes]:
+    """STUN Binding Request. Возвращает (txid, packet).
 
-    Голос Discord идёт по UDP; при блокировке STUN не отвечает (таймаут), при
-    троттлинге RTT резко растёт. Возвращает (жив, лучший RTT мс).
-
-    Оговорка: STUN-сервер гугла — это прокси-индикатор UDP-пути, а не сам
-    медиасервер Discord. Полностью заблокированный UDP ловится надёжно; тонкую
-    подмену «STUN отвечает, а голос мёртв» этот тест поймать не может.
+    pad>0 добивает пакет comprehension-optional атрибутом (тип >=0x8000, сервер
+    его игнорирует) до нужного размера — так проверяем прохождение БОЛЬШИХ UDP
+    (аналог видео-пакета демонстрации экрана), не ломая ответ STUN.
     """
+    txid = os.urandom(12)
+    attrs = b""
+    if pad > 0:
+        val = b"\x00" * (pad - (pad % 4))  # длина атрибута кратна 4
+        attrs = struct.pack("!HH", 0x8022, len(val)) + val  # 0x8022 — опциональный
+    packet = struct.pack("!HHI", 0x0001, len(attrs), 0x2112A442) + txid + attrs
+    return txid, packet
+
+
+def stun_burst(server: tuple[str, int], count: int, timeout: float,
+               pad: int = 0) -> tuple[int, list[float]]:
+    """Шлёт count STUN-запросов НА ОДНОМ сокете и собирает ответы в окне timeout.
+
+    Так за ~timeout меряем сразу потери и джиттер (а не timeout*count).
+    Возвращает (сколько отправлено, список RTT ответивших по txid).
+    """
+    try:
+        addr = (socket.gethostbyname(server[0]), server[1])
+    except OSError:
+        return 0, []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    sent: dict[bytes, float] = {}
+    answered: set[bytes] = set()
     rtts: list[float] = []
-    for _ in range(max(1, attempts)):
-        r = stun_rtt(timeout=timeout)
-        if r is not None:
-            rtts.append(r)
-    if not rtts:
-        return False, -1.0
-    best = min(rtts)
-    # Живо, если ответило большинство попыток и лучший RTT не запределен.
-    alive = len(rtts) >= (attempts + 1) // 2 and best <= VOICE_RTT_MAX_MS
-    return alive, best
+    try:
+        for _ in range(count):
+            txid, packet = _stun_packet(pad)
+            sent[txid] = time.perf_counter()
+            try:
+                s.sendto(packet, addr)
+            except OSError:
+                pass
+            time.sleep(0.02)  # лёгкий разгон, не заваливаем одним всплеском
+        deadline = time.perf_counter() + timeout
+        # Ждём, пока не ответят ВСЕ отправленные или не выйдет окно (не выходим раньше).
+        while len(answered) < count and time.perf_counter() < deadline:
+            try:
+                s.settimeout(max(0.05, deadline - time.perf_counter()))
+                data, _ = s.recvfrom(2048)
+            except (socket.timeout, OSError):
+                break
+            if len(data) >= 20 and data[4:8] == b"\x21\x12\xa4\x42":
+                rxid = data[8:20]
+                if rxid in sent and rxid not in answered:
+                    answered.add(rxid)
+                    rtts.append(round((time.perf_counter() - sent[rxid]) * 1000, 1))
+    finally:
+        s.close()
+    return count, rtts
+
+
+def check_voice(attempts: int = 5, timeout: float = 1.6) -> ServiceResult:
+    """Многометричная авто-проверка UDP-пути голоса/демонстрации Discord.
+
+    Меряет не только RTT, а связку сигналов (всё в фоне, без участия человека):
+      - потери мелких STUN-проб (задушенный/рвущийся путь),
+      - джиттер (нестабильность → рвущийся голос),
+      - прохождение БОЛЬШОГО пакета ~1 КБ (аналог видео демонстрации экрана).
+
+    Возвращает ServiceResult с заполненными voice_ok/voice_rtt/voice_conf/voice_detail
+    (используем как контейнер метрик; service="_voice").
+
+    Оговорка сохраняется: STUN — прокси UDP-пути, а не сам медиасервер Discord.
+    Но многометрика ловит большинство случаев «STUN пингуется, а медиа мёртвая»
+    (высокие потери / джиттер / провал больших пакетов). Пороги калибруются по логам.
+    """
+    out = ServiceResult(service="_voice")
+    # Берём первый STUN-сервер, который вообще отвечает на мелкие пробы.
+    small_rtts: list[float] = []
+    used = None
+    for srv in STUN_SERVERS:
+        _, small_rtts = stun_burst(srv, count=attempts, timeout=timeout, pad=0)
+        if small_rtts:
+            used = srv
+            break
+    if not used or not small_rtts:
+        out.voice_ok, out.voice_rtt = False, -1.0
+        out.voice_conf, out.voice_detail = "high", "UDP мёртв: STUN не отвечает"
+        return out
+
+    loss = 1.0 - len(small_rtts) / max(1, attempts)
+    best = min(small_rtts)
+    jitter = round(max(small_rtts) - min(small_rtts), 1) if len(small_rtts) > 1 else 0.0
+    # Большой пакет — на том же сервере, что ответил на мелкие (изолируем путь от сервера).
+    _, big_rtts = stun_burst(used, count=3, timeout=timeout, pad=VOICE_BIG_BYTES)
+    big_ok = len(big_rtts) >= 1
+
+    out.voice_rtt = best
+    small_ok = loss <= VOICE_LOSS_MAX and best <= VOICE_RTT_MAX_MS
+    out.voice_ok = bool(small_ok and big_ok)
+    # Уверенность: high — сигнал чёткий; low — пограничный (тут уместен опц. ручной чек).
+    borderline = (loss > VOICE_LOSS_MAX * 0.6 or best > VOICE_RTT_MAX_MS * 0.7
+                  or jitter > 250 or (small_ok and not big_ok))
+    out.voice_conf = "low" if borderline else "high"
+    out.voice_detail = (f"rtt={best}мс loss={loss:.0%} jitter={jitter}мс "
+                        f"big={'ok' if big_ok else 'DROP'}({len(big_rtts)}/3)")
+    return out
 
 
 def test_service(
@@ -243,9 +334,13 @@ def test_service(
             for host, path in tgts
         ]
         result.sites = [f.result() for f in futures]
-    # Для голосовых сервисов дополнительно меряем UDP-путь.
+    # Для голосовых сервисов дополнительно меряем UDP-путь (многометрично).
     if check_voice_udp and service in VOICE_SERVICES:
-        result.voice_ok, result.voice_rtt = check_voice(timeout=min(2.0, timeout))
+        vc = check_voice(timeout=min(1.6, timeout))
+        result.voice_ok = vc.voice_ok
+        result.voice_rtt = vc.voice_rtt
+        result.voice_conf = vc.voice_conf
+        result.voice_detail = vc.voice_detail
     return result
 
 

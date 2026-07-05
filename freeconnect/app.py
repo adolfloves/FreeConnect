@@ -665,7 +665,8 @@ class Api:
                 parts = []
                 for s in sc.services:
                     sites = ",".join(f"{x.host.split('.')[0]}={x.status}" for x in s.sites)
-                    v = "" if s.voice_ok is None else f" voice={'ok' if s.voice_ok else 'DEAD'}({s.voice_rtt})"
+                    v = "" if s.voice_ok is None else (
+                        f" voice={'ok' if s.voice_ok else 'DEAD'}/{s.voice_conf}[{s.voice_detail}]")
                     parts.append(f"{s.service}[{sites}{v}] ok={s.ok}")
                 _log(f"CAND {sc.strategy.name}: working={sc.working} label={sc.result_label()!r} | "
                      + " | ".join(parts))

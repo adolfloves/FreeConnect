@@ -240,6 +240,11 @@ def deep_search(
             ok_services = sc.working_services
             disc_ok = "discord" in ok_services
             all_ok = sc.services_ok == len(svcs) and len(svcs) > 0
+            # Уверенность авто-проверки голоса Discord (high/low). Низкая = метрики
+            # пограничные (потери/джиттер/большие пакеты) → возможен рвущийся голос
+            # или сломанная демонстрация. Такой «All» сохраняем, но НЕ останавливаемся.
+            disc_conf = next((s.voice_conf for s in sc.services if s.service == "discord"), "")
+            all_ok_high = all_ok and disc_conf == "high"
 
             # решаем, сохранять ли (приоритет — Discord; ютуб-онли лимитируем)
             keep = False
@@ -260,8 +265,8 @@ def deep_search(
             if on_result:
                 on_result(sc)
 
-            if stop_on_all and all_ok:
-                break                       # нашли Discord+голос+YouTube — цель достигнута
+            if stop_on_all and all_ok_high:
+                break                       # Discord(голос high)+YouTube — цель достигнута
             if stop_after and found_discord >= stop_after:
                 break
     finally:
