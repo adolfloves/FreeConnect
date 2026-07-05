@@ -46,7 +46,10 @@ Name: "{group}\Удалить FreeConnect"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\FreeConnect"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить FreeConnect"; Flags: nowait postinstall skipifsilent
+; runascurrentuser — запуск в уже-повышенном контексте установщика. Без него
+; postinstall стартует exe от имени обычного юзера, а манифест uac_admin требует
+; админа → CreateProcess не может поднять права → ошибка 740.
+Filename: "{app}\{#MyAppExeName}"; Description: "Запустить FreeConnect"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
 ; Снимаем задачу автозапуска, чтобы она не указывала на удалённый .exe.
