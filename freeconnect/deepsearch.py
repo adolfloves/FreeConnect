@@ -207,6 +207,7 @@ def deep_search(
     stop_after: int = 0,
     stop_on_all: bool = True,
     max_youtube_only: int = 1,
+    min_all: int = 2,
 ) -> list[StrategyScore]:
     """Перебирает сгенерированных кандидатов, сохраняя рабочих как FreeConnect #N.
 
@@ -214,8 +215,9 @@ def deep_search(
       - сохраняем кандидата с рабочим Discord (метка Discord/All) всегда;
       - ютуб-онли сохраняем максимум `max_youtube_only` штук (как запасную), чтобы
         не засорять список и не «останавливаться» на ютубе;
-      - `stop_on_all` — как только найден кандидат с ВСЕМИ сервисами (Discord+голос
-        И YouTube) — цель достигнута, останавливаемся;
+      - `stop_on_all` — останавливаемся, когда найдено `min_all` кандидатов с ВСЕМИ
+        сервисами (Discord+голос И YouTube) и НАДЁЖНЫМ голосом (voice_conf=high).
+        Даём пользователю не одну, а несколько «All» на выбор (просил друг-тестер);
       - `stop_after` — доп. лимит по числу сохранённых Discord/All (0 = без лимита).
     """
     from . import tester
@@ -225,6 +227,7 @@ def deep_search(
     eng = engine or Engine()
     results: list[StrategyScore] = []
     found_discord = 0
+    found_all_high = 0
     yt_only_saved = 0
     total = len(candidates)
 
@@ -260,13 +263,15 @@ def deep_search(
                 sc.strategy = saved
                 if disc_ok:
                     found_discord += 1
+                if all_ok_high:
+                    found_all_high += 1
                 if on_found:
                     on_found(saved, sc)
             if on_result:
                 on_result(sc)
 
-            if stop_on_all and all_ok_high:
-                break                       # Discord(голос high)+YouTube — цель достигнута
+            if stop_on_all and found_all_high >= max(1, min_all):
+                break                       # набрали min_all надёжных All — цель достигнута
             if stop_after and found_discord >= stop_after:
                 break
     finally:

@@ -63,7 +63,18 @@ body{
 .splash-step{font-size:12px;color:var(--txt-dim);font-family:'Consolas',monospace;
   min-height:18px;letter-spacing:.3px}
 
-.app{position:relative;z-index:2;height:100vh;display:flex;flex-direction:column;padding:22px 26px;max-width:560px;margin:0 auto}
+.app{position:relative;z-index:2;height:100vh;overflow-y:auto;display:flex;flex-direction:column;padding:22px 26px;max-width:560px;margin:0 auto}
+/* Низкие/масштабированные экраны (4K с крупным масштабом Windows, ноутбуки):
+   поджимаем крупный блок главной кнопки, чтобы нижняя кнопка была видна без обрезки.
+   Если всё равно не влезает — .app прокручивается (overflow-y:auto выше). */
+@media (max-height: 840px){
+  .app{padding:14px 26px}
+  .hero{gap:14px}
+  .power{width:188px;height:188px}
+  .ring-mid{inset:20px}
+  .ring-inner{inset:40px}
+  .bolt{width:46px;height:46px}
+}
 
 /* Шапка */
 .topbar{display:flex;align-items:center;justify-content:space-between}
@@ -285,6 +296,24 @@ body.frameless .splash:not(.hide) ~ .win-controls{opacity:0;pointer-events:none}
 .modal-head{display:flex;align-items:center;justify-content:space-between;padding:18px 20px;border-bottom:1px solid var(--panel-brd)}
 .modal-title{font-size:16px;font-weight:700}
 .modal-body{padding:16px 20px;overflow-y:auto}
+
+/* Полоса прокрутки под общий дизайн (WebView2 = Chromium -> ::-webkit-scrollbar).
+   Системная была невидимой на тёмной теме — теперь тонкая, в фирменном градиенте. */
+.modal-body, .found-list, .app{scrollbar-width:thin;scrollbar-color:var(--accent2) transparent}
+.modal-body::-webkit-scrollbar,
+.found-list::-webkit-scrollbar,
+.app::-webkit-scrollbar{width:10px;height:10px}
+.modal-body::-webkit-scrollbar-track,
+.found-list::-webkit-scrollbar-track,
+.app::-webkit-scrollbar-track{background:transparent;margin:6px 0}
+.modal-body::-webkit-scrollbar-thumb,
+.found-list::-webkit-scrollbar-thumb,
+.app::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,var(--accent),var(--accent2));
+  border-radius:8px;border:2px solid transparent;background-clip:padding-box;min-height:36px}
+.modal-body::-webkit-scrollbar-thumb:hover,
+.found-list::-webkit-scrollbar-thumb:hover,
+.app::-webkit-scrollbar-thumb:hover{background:var(--accent2)}
 .settings-note{margin-top:14px;font-size:12px;color:var(--txt-dim);line-height:1.5;
   padding:12px;border-radius:10px;background:rgba(255,200,97,.08);border:1px solid rgba(255,200,97,.2)}
 
