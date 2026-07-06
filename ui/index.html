@@ -160,6 +160,11 @@
 <!-- Оверлей поиска -->
 <div class="overlay" id="searchOverlay">
   <div class="scanner">
+    <!-- Мини-игра (динозавр) — пока идёт подбор, можно поиграть -->
+    <div class="dino-wrap" id="dinoWrap">
+      <canvas id="dinoCanvas"></canvas>
+      <div class="dino-hint">пока подбираем — можно поиграть · <b>пробел</b> — прыжок</div>
+    </div>
     <div class="radar" id="radar">
       <div class="radar-sweep"></div>
       <div class="radar-grid"></div>
@@ -232,6 +237,7 @@
 </div>
 
 <script src="fx.js"></script>
+<script src="dino.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

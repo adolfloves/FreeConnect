@@ -196,6 +196,7 @@ const scanTitle=$("#scanTitle");
 let deepMode=false, deepFound=0;
 function openScan(deep){
   overlay.classList.add("show");
+  if(window.Dino) requestAnimationFrame(()=>Dino.start($("#dinoCanvas")));
   foundList.innerHTML=""; progressBar.style.width="0%"; scanCount.textContent="0 / 0";
   scanCurrent.textContent="инициализация…";
   scanTitle.textContent = deep ? "Кую стратегию под тебя" : "Подбираю стратегию под твоего провайдера";
@@ -262,6 +263,7 @@ window.onSearchDone=(working)=>{
   progressBar.style.width="100%";
   setTimeout(async()=>{
     overlay.classList.remove("show");
+    if(window.Dino) Dino.stop();
     state=await api().get_state();
     renderPower(); await refreshStatus();
     if(state.working && state.working.length) renderStrategyList(state.working);
@@ -393,7 +395,7 @@ wireSetting("#optGameFilter","game_filter");
 powerBtn.onclick=togglePower;
 $("#searchBtn").onclick=openSearch;
 $("#deepBtn").onclick=openDeep;
-$("#cancelSearchBtn").onclick=()=>{ if(api().cancel_search) api().cancel_search(); if(deepMode&&window.FX) FX.forgeStop(); overlay.classList.remove("show"); };
+$("#cancelSearchBtn").onclick=()=>{ if(api().cancel_search) api().cancel_search(); if(deepMode&&window.FX) FX.forgeStop(); if(window.Dino) Dino.stop(); overlay.classList.remove("show"); };
 $("#pickBtn").onclick=()=>{ renderStrategyList(state.working||[]); $("#pickModal").classList.add("show"); };
 $("#closePick").onclick=()=>$("#pickModal").classList.remove("show");
 $("#settingsBtn").onclick=()=>$("#settingsModal").classList.add("show");

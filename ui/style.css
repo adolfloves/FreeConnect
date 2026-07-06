@@ -245,10 +245,19 @@ body.frameless .splash:not(.hide) ~ .win-controls{opacity:0;pointer-events:none}
 .overlay{
   position:fixed;inset:0;z-index:20;display:none;place-items:center;
   background:rgba(5,7,15,.82);backdrop-filter:blur(10px);
+  overflow-y:auto;padding:18px 0;
 }
 .overlay.show{display:grid;animation:fade .3s}
 @keyframes fade{from{opacity:0}to{opacity:1}}
-.scanner{display:flex;flex-direction:column;align-items:center;gap:16px;width:min(440px,90vw);text-align:center}
+.scanner{display:flex;flex-direction:column;align-items:center;gap:14px;width:min(440px,90vw);text-align:center}
+
+/* Мини-игра (динозавр) сверху оверлея подбора */
+.dino-wrap{width:100%}
+#dinoCanvas{width:100%;height:150px;display:block;border-radius:14px;
+  background:linear-gradient(180deg,rgba(20,26,42,.55),rgba(11,15,28,.55));
+  border:1px solid var(--panel-brd);cursor:pointer}
+.dino-hint{margin-top:6px;font-size:11px;color:var(--txt-dim)}
+.dino-hint b{color:var(--accent)}
 .radar{position:relative;width:200px;height:200px;border-radius:50%;
   background:radial-gradient(circle,rgba(55,224,196,.06),transparent 70%);
   border:1px solid rgba(55,224,196,.2);overflow:hidden}
