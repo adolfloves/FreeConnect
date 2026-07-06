@@ -1,5 +1,7 @@
-/* Пиксельные эффекты FreeConnect: молнии при включении, пожар при выключении.
-   Рендер на canvas с отключённым сглаживанием — нарочито «пиксельный» вид. */
+/* Эффекты FreeConnect кнопки питания:
+   surge — всплеск энергии при включении, discharge — плавная разрядка при выключении.
+   Плавные светящиеся частицы (additive), в едином языке со «стеклянным» UI.
+   Пиксельными остаются только логотип-молния (logoBolt) и кузница глубокого поиска. */
 window.FX = (function(){
   const CELL = 7;                 // размер «пикселя»
   let canvas, ctx, W, H, raf = 0;
@@ -22,80 +24,122 @@ window.FX = (function(){
     ctx.fillRect(Math.round(x/CELL)*CELL, Math.round(y/CELL)*CELL, s, s);
   }
 
-  // ---------- Молнии (включение) ----------
-  function drawBolt(x0, y0, x1, y1){
-    const steps = Math.max(6, Math.abs(y1-y0)/CELL);
-    const dx = (x1-x0)/steps;
-    let x = x0, y = y0;
-    for(let i=0;i<steps;i++){
-      x += dx + (Math.random()*3-1.5)*CELL;
-      y += (y1-y0)/steps;
-      px(x-CELL, y, "rgba(55,224,196,.5)");
-      px(x+CELL, y, "rgba(107,140,255,.5)");
-      px(x, y, "#eafffb");                       // белое ядро
-      if(Math.random()<0.12){                    // ответвление
-        let bx = x;
-        for(let j=0;j<3;j++){ bx += (Math.random()>.5?CELL:-CELL); px(bx, y+j*CELL, "rgba(191,249,255,.75)"); }
-      }
-    }
+  // ---------- Плавные помощники (additive-свечение) ----------
+  // Мягкая светящаяся точка: радиальный градиент от цвета к прозрачному.
+  function glowDot(x, y, r, color, alpha){
+    if(r <= 0 || alpha <= 0) return;
+    ctx.globalAlpha = Math.min(1, alpha);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, color);
+    g.addColorStop(0.4, color);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI*2);
+    ctx.fill();
   }
-  function lightning(cx, cy){
-    ensure(); cancelAnimationFrame(raf);
-    const start = performance.now(), dur = 750;
-    function frame(now){
-      const t = (now-start)/dur;
-      ctx.clearRect(0,0,W,H);
-      if(t>=1){ return; }
-      const flash = Math.max(0, 1 - t*3);
-      if(flash>0){ ctx.fillStyle = `rgba(120,240,255,${0.22*flash})`; ctx.fillRect(0,0,W,H); }
-      const on = (Math.floor(now/55)%2===0) || t<0.15;
-      if(on){
-        for(let b=0;b<3;b++) drawBolt(cx+(b-1)*42, -10, cx+(Math.random()*60-30), cy);
-        for(let s=0;s<12;s++){
-          const a=Math.random()*Math.PI*2, r=40+Math.random()*75;
-          px(cx+Math.cos(a)*r, cy+Math.sin(a)*r, Math.random()>.5?"#bff9ff":"#37e0c4");
-        }
-      }
-      raf = requestAnimationFrame(frame);
+  // Тонкая светящаяся дуга энергии (сглаженная ломаная со свечением).
+  function energyArc(x0, y0, x1, y1, spread, color, width, alpha){
+    const dist = Math.hypot(x1-x0, y1-y0) || 1;
+    const segs = Math.max(4, Math.round(dist/26));
+    const nx = -(y1-y0)/dist, ny = (x1-x0)/dist;   // единичная нормаль
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.shadowColor = color; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.moveTo(x0, y0);
+    for(let i=1;i<=segs;i++){
+      const t = i/segs;
+      const off = (Math.random()*2-1) * spread * Math.sin(t*Math.PI);   // тоньше к концам
+      ctx.lineTo(x0 + (x1-x0)*t + nx*off, y0 + (y1-y0)*t + ny*off);
     }
-    raf = requestAnimationFrame(frame);
+    ctx.stroke();
+    ctx.restore();
   }
 
-  // ---------- Пожар (выключение) ----------
-  function fire(cx, cy){
+  // ---------- Всплеск энергии (включение) ----------
+  function surge(cx, cy){
     ensure(); cancelAnimationFrame(raf);
-    const start = performance.now(), dur = 1050;
+    const start = performance.now(), dur = 820;
     const parts = [];
-    const colors = ["#fff3b0","#ffd23f","#ff8c1a","#ff4d1a","#c81f1f"];
+    for(let i=0;i<46;i++){
+      parts.push({
+        a: Math.random()*Math.PI*2,
+        sp: 55 + Math.random()*220,              // px/сек
+        r0: 7 + Math.random()*10,
+        born: Math.random()*0.12,
+        col: Math.random()>0.45 ? "rgba(120,240,255,1)" : "rgba(143,176,255,1)"
+      });
+    }
     function frame(now){
       const t = (now-start)/dur;
       ctx.clearRect(0,0,W,H);
-      if(t>=1){ return; }
-      if(t<0.55){                                // эмиссия частиц
-        for(let i=0;i<9;i++){
-          const a=Math.random()*Math.PI*2, r=Math.random()*72;
-          parts.push({
-            x: cx+Math.cos(a)*r,
-            y: cy+Math.abs(Math.sin(a))*28+18,
-            vx:(Math.random()*2-1)*CELL*0.18,
-            vy:-(1+Math.random()*2.4)*CELL*0.42,
-            life:0, max:0.5+Math.random()*0.5,
-            big:Math.random()<0.25
-          });
-        }
-      }
+      if(t>=1){ ctx.globalAlpha=1; ctx.globalCompositeOperation="source-over"; return; }
+      ctx.globalCompositeOperation = "lighter";
+      // центральный bloom, всплывает и тает
+      const bloomR = 26 + t*120;
+      glowDot(cx, cy, bloomR,     "rgba(90,230,220,1)",  (1-t)*0.45);
+      glowDot(cx, cy, bloomR*0.5, "rgba(200,255,250,1)", (1-t)*0.55);
+      // разлёт частиц (ease-out наружу, сжимаются и гаснут)
       for(const p of parts){
-        if(p.life>=1) continue;
-        p.life += 0.016/p.max; p.x+=p.vx; p.y+=p.vy; p.vy*=0.985;
-        const ci = Math.min(colors.length-1, Math.floor(p.life*colors.length));
-        px(p.x, p.y, colors[ci], p.big?2:1);
+        const lt = (t - p.born)/(1-p.born);
+        if(lt <= 0) continue;
+        const ease = 1-(1-lt)*(1-lt);
+        const d = p.sp * ease * (dur/1000);
+        glowDot(cx + Math.cos(p.a)*d, cy + Math.sin(p.a)*d,
+                p.r0*(1-lt*0.6), p.col, (1-lt)*0.9);
+      }
+      // дуги заряда бьют в кнопку сверху (только в начале, мерцают)
+      if(t < 0.42 && (Math.floor(now/45)%2===0)){
+        for(let b=0;b<3;b++){
+          const sx = cx + (Math.random()*160-80);
+          energyArc(sx, cy-175, cx, cy, 24, "rgba(200,252,255,1)", 2, (1-t/0.42)*0.85);
+        }
       }
       raf = requestAnimationFrame(frame);
     }
     raf = requestAnimationFrame(frame);
   }
 
-  function clear(){ if(ctx){ cancelAnimationFrame(raf); ctx.clearRect(0,0,W,H); } }
+  // ---------- Разрядка / power-down (выключение) ----------
+  // Свет стягивается к центру и гаснет — «отключился», без огня.
+  function discharge(cx, cy){
+    ensure(); cancelAnimationFrame(raf);
+    const start = performance.now(), dur = 820;
+    const parts = [];
+    for(let i=0;i<40;i++){
+      parts.push({
+        a: Math.random()*Math.PI*2,
+        r: 68 + Math.random()*70,                // стартовый радиус
+        r0: 6 + Math.random()*8,
+        born: Math.random()*0.15,
+        // цвет остывает от бирюзы к серому
+        col: Math.random()>0.5 ? "rgba(120,240,255,1)" : "rgba(150,165,190,1)"
+      });
+    }
+    function frame(now){
+      const t = (now-start)/dur;
+      ctx.clearRect(0,0,W,H);
+      if(t>=1){ ctx.globalAlpha=1; ctx.globalCompositeOperation="source-over"; return; }
+      ctx.globalCompositeOperation = "lighter";
+      // частицы ускоряются внутрь и гаснут
+      for(const p of parts){
+        const lt = (t - p.born)/(1-p.born);
+        if(lt <= 0) continue;
+        const d = p.r * (1 - lt*lt);              // ease-in к центру
+        glowDot(cx + Math.cos(p.a)*d, cy + Math.sin(p.a)*d,
+                p.r0*(1-lt*0.7), p.col, (1-lt)*0.7);
+      }
+      // ядро: короткая вспышка и плавное затухание
+      const coreA = t<0.15 ? (t/0.15)*0.5 : (1-(t-0.15)/0.85)*0.5;
+      glowDot(cx, cy, 42*(1-t*0.5), "rgba(120,220,215,1)", Math.max(0, coreA));
+      raf = requestAnimationFrame(frame);
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  function clear(){ if(ctx){ cancelAnimationFrame(raf); ctx.globalCompositeOperation="source-over"; ctx.globalAlpha=1; ctx.clearRect(0,0,W,H); } }
 
   // ---------- Логотип: анимированная пиксельная молния ----------
   function hex(h){ h=h.replace("#",""); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
@@ -230,5 +274,6 @@ window.FX = (function(){
   function forgeBurst(){ if(forge) forge.burst = 3; }
   function forgeStop(){ if(forge){ cancelAnimationFrame(forge.raf); forge.ctx.clearRect(0,0,forge.canvas.width,forge.canvas.height); forge=null; } }
 
-  return { lightning, fire, clear, logoBolt, forgeStart, forgeSetFound, forgeBurst, forgeStop };
+  return { surge, discharge, lightning:surge, fire:discharge, clear,
+           logoBolt, forgeStart, forgeSetFound, forgeBurst, forgeStop };
 })();

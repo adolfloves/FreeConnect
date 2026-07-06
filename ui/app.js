@@ -148,20 +148,20 @@ function setCharge(level, ms){
   boltFill.style.transition=`transform ${ms}ms cubic-bezier(.3,.55,.2,1)`;
   boltFill.style.transform=`translateY(${(1-level)*24}px)`;
 }
-// Реакция кнопки на попадание молнии / пламени
-function shockwave(fire){
-  const s=$("#shock"); s.className="shock"+(fire?" fire":"");
+// Реакция кнопки: всплеск энергии (вкл) / разрядка (выкл)
+function shockwave(down){
+  const s=$("#shock"); s.className="shock"+(down?" down":"");
   void s.offsetWidth; s.classList.add("go");
 }
 function zapButton(){
-  const c=btnCenter(); if(window.FX) FX.lightning(c.x,c.y);
-  setTimeout(()=>{ power.classList.add("zap"); shockwave(false); setTimeout(()=>power.classList.remove("zap"),340); }, 160);
+  const c=btnCenter(); if(window.FX) FX.surge(c.x,c.y);
+  setTimeout(()=>{ power.classList.add("zap"); shockwave(false); setTimeout(()=>power.classList.remove("zap"),480); }, 120);
 }
-function scorchButton(){
-  power.classList.add("scorch"); shockwave(true);
-  // Пламя зажигается чуть позже — чтобы сначала было видно, как заряд стекает.
-  setTimeout(()=>{ const c=btnCenter(); if(window.FX) FX.fire(c.x,c.y); }, 430);
-  setTimeout(()=>power.classList.remove("scorch"),820);
+function dischargeButton(){
+  power.classList.add("powerdown"); shockwave(true);
+  // Разрядка стартует чуть позже — сначала видно, как заряд стекает вниз.
+  setTimeout(()=>{ const c=btnCenter(); if(window.FX) FX.discharge(c.x,c.y); }, 380);
+  setTimeout(()=>power.classList.remove("powerdown"),820);
 }
 
 async function togglePower(){
@@ -169,8 +169,8 @@ async function togglePower(){
   if(state.enabled){
     power.classList.remove("charged","on");   // заряд молнии плавно стекает вниз
     powerWord.textContent="OFF";
-    setCharge(0, 780);                         // разрядка видна ДО пламени
-    scorchButton();                            // пламя зажигается через ~0.43с
+    setCharge(0, 780);                         // заряд стекает вниз ДО разрядки
+    dischargeButton();                         // свет схлопывается через ~0.38с
     state=await api().disable();
     renderPower(); refreshStatus();
     return;

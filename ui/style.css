@@ -118,8 +118,11 @@ body.frameless .splash:not(.hide) ~ .win-controls{opacity:0;pointer-events:none}
 .shock{position:absolute;width:150px;height:150px;border-radius:50%;border:3px solid var(--accent);
   opacity:0;pointer-events:none;z-index:3}
 .shock.go{animation:shockwave .6s ease-out}
-.shock.fire{border-color:#ff6a1a}
 @keyframes shockwave{0%{transform:scale(.55);opacity:.9}100%{transform:scale(2.2);opacity:0}}
+/* Разрядка: кольцо схлопывается внутрь, холодный тон */
+.shock.down{border-color:rgba(120,150,175,.6)}
+.shock.down.go{animation:shockdown .6s ease-in}
+@keyframes shockdown{0%{transform:scale(1.7);opacity:.7}100%{transform:scale(.5);opacity:0}}
 .ring{position:absolute;border-radius:50%;border:1px solid rgba(255,255,255,.06)}
 .ring-outer{inset:0;border-color:rgba(107,140,255,.18)}
 .ring-mid{inset:26px;border-color:rgba(55,224,196,.14)}
@@ -169,20 +172,25 @@ body.frameless .splash:not(.hide) ~ .win-controls{opacity:0;pointer-events:none}
 .power.on .ring-outer{border-color:rgba(55,224,196,.5);animation:pulseRing 3s ease-out infinite}
 .power.on .ring-mid{border-color:rgba(55,224,196,.3);animation:pulseRing 3s ease-out .6s infinite}
 
-/* Реакция кнопки на удар молнии / пламя */
+/* Реакция кнопки: всплеск энергии (вкл) / плавная разрядка (выкл) — без тряски */
 .power.zap .power-btn{
   border-color:#bff9ff !important;
   background:radial-gradient(circle at 50% 40%,rgba(190,250,255,.5),transparent 55%),linear-gradient(160deg,#1a2138,#0e1322) !important;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 0 90px rgba(120,240,255,.85) !important;
-  animation:shake .32s ease-in-out;
+  animation:enPop .5s cubic-bezier(.2,.9,.25,1);
 }
-.power.scorch .power-btn{
-  border-color:#ff8a3a !important;
-  background:radial-gradient(circle at 50% 60%,rgba(255,120,40,.5),transparent 55%),linear-gradient(160deg,#2a1710,#1a0f0c) !important;
-  box-shadow:0 0 90px rgba(255,90,20,.75) !important;
-  animation:shake .32s ease-in-out;
+.power.powerdown .power-btn{
+  border-color:rgba(120,150,175,.5) !important;
+  background:radial-gradient(circle at 50% 50%,rgba(60,84,104,.32),transparent 55%),linear-gradient(160deg,#141a28,#0c1018) !important;
+  box-shadow:0 0 46px rgba(60,90,110,.4) !important;
+  animation:enSink .6s ease-in;
 }
-@keyframes shake{0%,100%{transform:scale(1)}20%{transform:translate(-4px,2px) scale(1.02)}45%{transform:translate(4px,-2px) scale(1.03)}70%{transform:translate(-2px,3px) scale(1.01)}}
+/* Плавный «pop» при включении и мягкая просадка при выключении — вместо джиттера */
+@keyframes enPop{0%{transform:scale(1)}32%{transform:scale(1.06)}100%{transform:scale(1)}}
+@keyframes enSink{0%{transform:scale(1)}42%{transform:scale(.94)}100%{transform:scale(1)}}
+/* Кольца стягиваются и гаснут при разрядке */
+.power.powerdown .ring{animation:ringSink .55s ease-in forwards}
+@keyframes ringSink{0%{transform:scale(1);opacity:1}100%{transform:scale(.82);opacity:.15}}
 
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulseRing{
