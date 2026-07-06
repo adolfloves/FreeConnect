@@ -111,6 +111,17 @@ class Engine:
         except Exception:
             return ""
 
+    def _winws_ready(self) -> bool:
+        """winws напечатал, что WinDivert поднят и захват пошёл — можно тестировать.
+        Позволяет НЕ досиживать полный settle, если стратегия применилась за <1с."""
+        try:
+            if self._logf:
+                self._logf.flush()
+            data = self._winws_log.read_bytes().decode("cp866", errors="replace").lower()
+            return "windivert initialized" in data
+        except Exception:
+            return False
+
     def start(self, strategy: Strategy, settle: float = 4.0) -> None:
         """Запускает winws со стратегией. settle — пауза на инициализацию (сек)."""
         if not _IS_WIN:
@@ -153,9 +164,12 @@ class Engine:
 
         self.current = strategy
 
-        # Ждём инициализации, но выходим сразу, как только winws упал: кривые
-        # мутации завершаются мгновенно, и незачем досиживать полный settle —
-        # это главный ускоритель перебора кандидатов в глубоком поиске.
+        # Ждём инициализации, но выходим сразу в двух случаях:
+        #  1) winws упал (кривая мутация завершается мгновенно) — не досиживаем settle;
+        #  2) winws напечатал "windivert initialized" — обход уже применён, тестировать
+        #     можно сразу (обычно <1с вместо глухих 4с). settle остаётся верхней
+        #     границей-фолбэком, если маркера в этой версии нет.
+        # Это ускоряет КАЖДУЮ проверку — и автоподбор, и генерацию — не урезая перебор.
         deadline = time.perf_counter() + settle
         while time.perf_counter() < deadline:
             if self._proc.poll() is not None:
@@ -163,7 +177,11 @@ class Engine:
                 why = self._winws_tail()
                 self.current = None
                 raise EngineError(f"winws завершился сразу (код {code}) — {why or 'стратегия неприменима'}")
-            time.sleep(0.15)
+            if self._winws_ready():
+                # маленькая доводка, чтобы WinDivert успел навесить callout
+                time.sleep(0.25)
+                break
+            time.sleep(0.1)
 
         if self._proc.poll() is not None:
             code = self._proc.returncode

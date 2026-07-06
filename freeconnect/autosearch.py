@@ -112,7 +112,7 @@ def search(
     settle: float = 4.0,
     probe_freeze: bool = True,
     stop_on_first: bool = False,
-    stop_after_all: int = 2,
+    stop_after_all: int = 0,
     engine: Engine | None = None,
     on_progress: ProgressCb | None = None,
     on_result: ResultCb | None = None,
@@ -121,10 +121,10 @@ def search(
     """Перебирает стратегии и возвращает список StrategyScore, отсортированный по оценке.
 
     stop_on_first — остановиться на первой полностью рабочей (быстрый режим).
-    stop_after_all — остановиться, набрав столько стратегий с ВСЕМИ сервисами
-      (All). Перебор 20 встроенных стратегий последовательный (один winws за раз —
-      WinDivert не параллелится), поэтому ранняя остановка на паре хороших вариантов
-      резко сокращает время (не гоняем все 20, если 2 уже открывают всё). 0 = без лимита.
+    stop_after_all — 0 (по умолчанию) = перебрать ВСЕ стратегии и показать полный
+      список на выбор. >0 = остановиться, набрав столько All (быстрый, но урезанный
+      список — по фидбеку не нужен: юзер хочет ускорять саму проверку, а не резать
+      перебор). Оставлено параметром на случай «быстрого» режима.
     """
     svcs = services or list(tester.DEFAULT_TARGETS.keys())
     strats = strategies if strategies is not None else load_strategies()
