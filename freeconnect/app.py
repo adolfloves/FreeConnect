@@ -434,22 +434,52 @@ class Api:
 
     def _do_install_update(self, url: str) -> None:
         import shutil as _sh
-        import tempfile
         import urllib.request
         try:
-            tmp = Path(tempfile.gettempdir()) / "FreeConnect-Setup-update.exe"
+            if not getattr(sys, "frozen", False):
+                raise RuntimeError("автообновление только в собранном приложении")
+            exe = sys.executable  # путь установленного FreeConnect.exe (после установки — новый)
+            # Файлы кладём в ASCII-путь C:\FreeConnect (не в %TEMP% с кириллицей —
+            # cmd/пути с кириллицей ненадёжны).
+            paths.ensure_dirs()
+            base = paths.APP_HOME
+            setup = base / "FreeConnect-Setup-update.exe"
+            bat = base / "FreeConnect-update.bat"
+
             req = urllib.request.Request(url, headers={"User-Agent": "FreeConnect"})
-            with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+            with urllib.request.urlopen(req, timeout=60) as r, open(setup, "wb") as f:
                 _sh.copyfileobj(r, f)
-            _log(f"update downloaded -> {tmp} ({tmp.stat().st_size} b)")
-            # DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP — установщик переживёт наш выход.
-            flags = 0x00000008 | 0x00000200
+            _log(f"update downloaded -> {setup} ({setup.stat().st_size} b)")
+
+            # Трамплин: ждёт завершения тихого установщика, затем стартует приложение
+            # как ОБЫЧНЫЙ запуск (start = ShellExecute) — чистое окружение, onefile
+            # распаковывается корректно. Раньше перезапуск делал сам установщик через
+            # [Run] runascurrentuser и onefile падал «python3xx.dll не найден».
+            bat.write_text(
+                "@echo off\r\n"
+                ":wait\r\n"
+                'tasklist /fi "imagename eq FreeConnect-Setup-update.exe" 2>nul | '
+                'find /i "FreeConnect-Setup-update.exe" >nul\r\n'
+                "if not errorlevel 1 (\r\n"
+                "  ping -n 2 127.0.0.1 >nul\r\n"
+                "  goto wait\r\n"
+                ")\r\n"
+                "ping -n 3 127.0.0.1 >nul\r\n"
+                f'start "" "{exe}"\r\n'
+                'del "%~f0"\r\n',
+                encoding="ascii")
+
+            DETACHED = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
             subprocess.Popen(
-                [str(tmp), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NOCANCEL", "/NORESTART"],
-                creationflags=flags, close_fds=True)
-            _log("update installer launched (silent) -> закрываюсь для замены файлов")
-            time.sleep(1.5)          # даём установщику проинициализироваться
-            self._tray_quit()        # освобождаем FreeConnect.exe; установщик перезапустит
+                [str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NOCANCEL", "/NORESTART"],
+                creationflags=DETACHED, close_fds=True)
+            subprocess.Popen(
+                ["cmd", "/c", str(bat)],
+                creationflags=DETACHED | 0x08000000,  # + CREATE_NO_WINDOW
+                close_fds=True)
+            _log("update: установщик+трамплин запущены -> закрываюсь для замены файлов")
+            time.sleep(0.8)
+            self._tray_quit()   # освобождаем FreeConnect.exe; трамплин перезапустит после установки
         except Exception as e:  # noqa: BLE001
             _log(f"install_update failed: {e}")
             self._push("onUpdateError", str(e))

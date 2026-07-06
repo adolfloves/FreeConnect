@@ -194,7 +194,17 @@ const overlay=$("#searchOverlay"), scanCurrent=$("#scanCurrent"), progressBar=$(
 
 const scanTitle=$("#scanTitle");
 let deepMode=false, deepFound=0;
+// Гасит Space/стрелку на короткое время (после закрытия оверлея), чтобы залётный
+// пробел из дино-игры не «нажал» сфокусированную кнопку и не перезапустил поиск.
+function _guardKeysBriefly(ms){
+  ms = ms || 800; const until = Date.now() + ms;
+  const h = (e)=>{ if(e.code==="Space"||e.code==="ArrowUp"){ e.preventDefault(); e.stopPropagation(); } };
+  document.addEventListener("keydown", h, true);
+  setTimeout(()=>document.removeEventListener("keydown", h, true), ms);
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
 function openScan(deep){
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); // кнопка не должна ловить пробел
   overlay.classList.add("show");
   if(window.Dino) requestAnimationFrame(()=>Dino.start($("#dinoCanvas")));
   foundList.innerHTML=""; progressBar.style.width="0%"; scanCount.textContent="0 / 0";
@@ -264,6 +274,7 @@ window.onSearchDone=(working)=>{
   setTimeout(async()=>{
     overlay.classList.remove("show");
     if(window.Dino) Dino.stop();
+    _guardKeysBriefly(800);           // залётный пробел из дино не должен перезапустить поиск
     state=await api().get_state();
     renderPower(); await refreshStatus();
     if(state.working && state.working.length) renderStrategyList(state.working);
@@ -395,7 +406,7 @@ wireSetting("#optGameFilter","game_filter");
 powerBtn.onclick=togglePower;
 $("#searchBtn").onclick=openSearch;
 $("#deepBtn").onclick=openDeep;
-$("#cancelSearchBtn").onclick=()=>{ if(api().cancel_search) api().cancel_search(); if(deepMode&&window.FX) FX.forgeStop(); if(window.Dino) Dino.stop(); overlay.classList.remove("show"); };
+$("#cancelSearchBtn").onclick=()=>{ if(api().cancel_search) api().cancel_search(); if(deepMode&&window.FX) FX.forgeStop(); if(window.Dino) Dino.stop(); overlay.classList.remove("show"); _guardKeysBriefly(800); };
 $("#pickBtn").onclick=()=>{ renderStrategyList(state.working||[]); $("#pickModal").classList.add("show"); };
 $("#closePick").onclick=()=>$("#pickModal").classList.remove("show");
 $("#settingsBtn").onclick=()=>$("#settingsModal").classList.add("show");
@@ -488,14 +499,30 @@ function renderUpdate(){
   }
 }
 function _manualUpdate(u){ if(u&&u.url&&api().open_url) api().open_url(u.url); }
+let _updArmed=false, _updTimer=null;
+function _updDisarm(){
+  _updArmed=false; clearTimeout(_updTimer);
+  const btn=$("#updateBtn"), txt=$("#updateText"), u=(state&&state.update)||{};
+  if(btn){ btn.textContent="Обновить"; btn.classList.remove("armed"); }
+  if(txt&&u.version) txt.textContent="Доступна новая версия "+u.version+" — обновись";
+}
 if($("#updateBtn")) $("#updateBtn").onclick=async()=>{
-  const u=(state&&state.update)||{}, btn=$("#updateBtn");
+  const u=(state&&state.update)||{}, btn=$("#updateBtn"), txt=$("#updateText");
+  // 1-й клик — предупреждаем, что приложение закроется; 2-й (подтверждение) — ставим.
+  if(!_updArmed){
+    _updArmed=true;
+    if(txt) txt.textContent="Приложение закроется, обновится и откроется само.";
+    btn.textContent="Закрыть и обновить"; btn.classList.add("armed");
+    _updTimer=setTimeout(_updDisarm, 6000);
+    return;
+  }
+  clearTimeout(_updTimer); _updArmed=false; btn.classList.remove("armed");
   btn.disabled=true; btn.textContent="Обновляю…";
+  if(txt) txt.textContent="Скачиваю обновление… приложение сейчас закроется.";
   try{
-    // Тихое автообновление: скачает и поставит поверх, приложение перезапустится.
     const r = api().install_update ? await api().install_update() : null;
-    if(r && r.ok){ return; }         // пойдёт установка и перезапуск — оставляем "Обновляю…"
-    _manualUpdate(u);                // нет тихого пути — открываем ручное скачивание
+    if(r && r.ok){ return; }          // пойдёт установка и перезапуск — оставляем "Обновляю…"
+    _manualUpdate(u);                 // нет тихого пути — ручное скачивание
   }catch(e){ _manualUpdate(u); }
   btn.disabled=false; btn.textContent="Обновить";
 };

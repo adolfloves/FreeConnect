@@ -26,7 +26,10 @@ WizardStyle=modern
 ; Restart Manager сам закроет его перед заменой файлов и запустит заново после.
 ; force — если не закрылся штатно, завершить принудительно (иначе замена exe упадёт).
 CloseApplications=force
-RestartApplications=yes
+; НЕ перезапускаем через Restart Manager — иначе при тихом автообновлении был бы
+; двойной старт (RM + [Run]). Перезапуск делает трамплин из приложения (чистое
+; окружение через ShellExecute), иначе onefile-exe падал «python3xx.dll не найден».
+RestartApplications=no
 ; Приложению нужен админ (winws/WinDivert) + установка в Program Files.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
@@ -54,9 +57,10 @@ Name: "{autodesktop}\FreeConnect"; Filename: "{app}\{#MyAppExeName}"; Tasks: des
 ; runascurrentuser — запуск в уже-повышенном контексте установщика. Без него
 ; postinstall стартует exe от имени обычного юзера, а манифест uac_admin требует
 ; админа → CreateProcess не может поднять права → ошибка 740.
-; Без skipifsilent — чтобы при ТИХОМ автообновлении из приложения оно тоже
-; перезапустилось после установки (иначе в silent-режиме [Run] пропускается).
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить FreeConnect"; Flags: nowait postinstall runascurrentuser
+; skipifsilent — при ТИХОМ автообновлении установщик НЕ перезапускает приложение
+; (его перезапускает трамплин из app.py через ShellExecute — чистое окружение,
+; иначе onefile падал «python3xx.dll не найден»). В обычной установке [Run] работает.
+Filename: "{app}\{#MyAppExeName}"; Description: "Запустить FreeConnect"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
 ; Снимаем задачу автозапуска, чтобы она не указывала на удалённый .exe.
