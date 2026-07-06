@@ -872,8 +872,41 @@ class Api:
         self._push("onExternalState", self._state())
 
 
+_SINGLE_INSTANCE_HANDLE = None
+
+
+def _acquire_single_instance() -> bool:
+    """True — мы единственная копия; False — уже запущена другая (надо выйти).
+
+    Ручка мьютекса держится в глобале, чтобы жила всё время работы процесса
+    (иначе GC закроет её и защита пропадёт). Нужна и сама по себе (winws/WinDivert
+    не терпят второй копии), и при автообновлении: установщик и трамплин из старой
+    версии могут одновременно попытаться открыть приложение — второй запуск тихо выйдет.
+    """
+    global _SINGLE_INSTANCE_HANDLE
+    try:
+        import ctypes
+        ERROR_ALREADY_EXISTS = 183
+        h = ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\FreeConnect_SingleInstance_v1")
+        if not h:
+            return True  # не смогли создать мьютекс — не блокируем запуск
+        if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+            return False
+        _SINGLE_INSTANCE_HANDLE = h
+        return True
+    except Exception:
+        return True  # на всякий случай не мешаем запуску
+
+
 def run(argv: list[str] | None = None) -> None:
     args = argv if argv is not None else sys.argv[1:]
+
+    # Одна копия на систему. При автообновлении старая версия уже вышла (мьютекс
+    # освобождён), поэтому новая копия спокойно стартует; лишний параллельный запуск
+    # (установщик + трамплин) — тихо завершится, без второго окна.
+    if not _acquire_single_instance():
+        _log("FreeConnect уже запущен — выходим (одна копия)")
+        return
 
     paths.ensure_dirs()
     try:

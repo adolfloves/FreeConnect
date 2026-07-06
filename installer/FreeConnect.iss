@@ -3,7 +3,7 @@
 ; Сборка: ISCC.exe installer\FreeConnect.iss  ->  installer\Output\FreeConnect-Setup.exe
 
 #define MyAppName "FreeConnect"
-#define MyAppVersion "0.1.6"
+#define MyAppVersion "0.1.7"
 #define MyAppPublisher "FreeConnect"
 #define MyAppExeName "FreeConnect.exe"
 
@@ -54,13 +54,15 @@ Name: "{group}\Удалить FreeConnect"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\FreeConnect"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; runascurrentuser — запуск в уже-повышенном контексте установщика. Без него
-; postinstall стартует exe от имени обычного юзера, а манифест uac_admin требует
-; админа → CreateProcess не может поднять права → ошибка 740.
-; skipifsilent — при ТИХОМ автообновлении установщик НЕ перезапускает приложение
-; (его перезапускает трамплин из app.py через ShellExecute — чистое окружение,
-; иначе onefile падал «python3xx.dll не найден»). В обычной установке [Run] работает.
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить FreeConnect"; Flags: nowait postinstall skipifsilent runascurrentuser
+; Перезапуск после установки (в т.ч. ТИХОГО автообновления) делает САМ установщик —
+; он всегда новой версии, поэтому фикс авто-открытия срабатывает уже на СЛЕДУЮЩЕМ апдейте
+; (а не через один, как было бы с перезапуском из старого приложения).
+; Запуск через `cmd /c start` = ShellExecute: чистое окружение, onefile распаковывается
+; корректно. Прямой [Run] с runascurrentuser де-повышал права и onefile падал
+; «python3xx.dll не найден» / ошибка 740 — поэтому идём через start из повышенного
+; контекста установщика (приложение наследует админ-права).
+; Второй возможный запуск (трамплин из старой версии) отсекает мьютекс одной копии.
+Filename: "{cmd}"; Parameters: "/C start """" ""{app}\{#MyAppExeName}"""; Description: "Запустить FreeConnect"; Flags: nowait runhidden postinstall
 
 [UninstallRun]
 ; Снимаем задачу автозапуска, чтобы она не указывала на удалённый .exe.
