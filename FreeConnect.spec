@@ -31,18 +31,20 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# onedir (папка exe + DLL рядом), НЕ onefile. Onefile при каждом запуске распаковывал
+# python314.dll во временную %TEMP%\_MEIxxxx и грузил оттуда — в контексте «сразу после
+# установки / из установщика» распаковка стабильно падала «Failed to load Python DLL».
+# onedir грузит DLL прямо из своей папки {app}\_internal — никакой распаковки, ошибки нет.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,  # onedir: бинарники/данные собирает COLLECT, не EXE
     name='FreeConnect',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=False,          # оконное приложение (логи пишутся в C:\FreeConnect\logs)
     disable_windowed_traceback=False,
     uac_admin=True,         # winws/WinDivert требуют администратора
@@ -51,4 +53,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='ui/icon.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='FreeConnect',     # -> dist\FreeConnect\ (FreeConnect.exe + _internal\)
 )

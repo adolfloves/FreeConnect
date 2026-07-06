@@ -46,7 +46,8 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительно:"; Flags: checkedonce
 
 [Files]
-Source: "..\dist\FreeConnect.exe"; DestDir: "{app}"; Flags: ignoreversion
+; onedir: кладём FreeConnect.exe и папку _internal (Python DLL, ui, runtime) целиком.
+Source: "..\dist\FreeConnect\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\FreeConnect"; Filename: "{app}\{#MyAppExeName}"
