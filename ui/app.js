@@ -206,6 +206,8 @@ function _guardKeysBriefly(ms){
 function openScan(deep){
   if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); // кнопка не должна ловить пробел
   overlay.classList.add("show");
+  // сброс возможных остатков гайд-проверки голоса
+  $("#vcPanel").style.display="none"; $("#foundList").style.display=""; $("#dinoWrap").style.display="";
   if(window.Dino) requestAnimationFrame(()=>Dino.start($("#dinoCanvas")));
   foundList.innerHTML=""; progressBar.style.width="0%"; scanCount.textContent="0 / 0";
   scanCurrent.textContent="инициализация…";
@@ -400,6 +402,7 @@ async function loadSettings(){
     $("#optMonitor").checked=s.monitor!==false;
     if($("#optGameFilter")) $("#optGameFilter").checked=!!s.game_filter;
     if($("#optDoh")) $("#optDoh").checked=!!s.doh;
+    if($("#optVoiceConfirm")) $("#optVoiceConfirm").checked=!!s.voice_confirm;
   }catch(e){}
 }
 function wireSetting(id,key){
@@ -410,6 +413,7 @@ wireSetting("#optAutostart","autostart");
 wireSetting("#optMonitor","monitor");
 wireSetting("#optGameFilter","game_filter");
 wireSetting("#optDoh","doh");
+wireSetting("#optVoiceConfirm","voice_confirm");
 // Отражаем реальный результат включения DoH (смена DNS идёт в фоне и может не удаться).
 window.onDohState=(ok)=>{
   const el=$("#optDoh"); if(el) el.checked=!!ok;
@@ -420,7 +424,37 @@ window.onDohState=(ok)=>{
 // ---------- События ----------
 powerBtn.onclick=togglePower;
 $("#searchBtn").onclick=openSearch;
-$("#deepBtn").onclick=openDeep;
+// Глубокий поиск: если включена точная проверка голоса — сначала гайд «зайди в канал».
+$("#deepBtn").onclick=async()=>{
+  let vc=false;
+  try{ if(window.pywebview&&api().get_settings){ const s=await api().get_settings(); vc=!!s.voice_confirm; } }catch(e){}
+  if(vc) $("#voiceSetupModal").classList.add("show");
+  else openDeep();
+};
+$("#voiceSetupCancel").onclick=()=>$("#voiceSetupModal").classList.remove("show");
+$("#voiceSetupDone").onclick=()=>{ $("#voiceSetupModal").classList.remove("show"); openDeep(); };
+// Гайд-подтверждение голоса: бэкенд включил кандидата и ждёт вердикт человека.
+window.onVoiceConfirmProbe=(info)=>{
+  if(window.FX) FX.forgeStop(); if(window.Dino) Dino.stop();
+  $("#forge").style.display="none"; $("#dinoWrap").style.display="none"; $("#foundList").style.display="none";
+  scanTitle.textContent=`Проверка голоса — кандидат ${info.index} / ${info.total}`;
+  scanCurrent.textContent="Смотри в Discord: голос в канале подключился?";
+  $("#vcPanel").style.display="block";
+};
+$("#vcYes").onclick=()=>{ if(api().voice_confirm_result) api().voice_confirm_result(true); $("#vcPanel").style.display="none"; scanCurrent.textContent="Фиксирую стратегию…"; };
+$("#vcNext").onclick=()=>{ if(api().voice_confirm_result) api().voice_confirm_result(false); $("#vcPanel").style.display="none"; scanCurrent.textContent="Пробую следующую стратегию…"; };
+window.onVoiceConfirmDone=(res)=>{
+  $("#vcPanel").style.display="none";
+  if(res && res.confirmed){ scanTitle.textContent="Готово!"; scanCurrent.textContent="Голос подтверждён: "+res.name; }
+  else if(res && res.empty){ scanTitle.textContent="Не получилось"; scanCurrent.textContent="Discord нигде не открылся — попробуй ещё раз"; }
+  else if(res && res.cancelled){ scanCurrent.textContent="Отменено"; }
+  else { scanTitle.textContent="Голос не подтвердился"; scanCurrent.textContent="Ни на одной стратегии голос не подключился"; }
+  setTimeout(async()=>{
+    overlay.classList.remove("show"); _guardKeysBriefly(800);
+    $("#forge").style.display=""; $("#dinoWrap").style.display=""; $("#foundList").style.display="";
+    if(window.pywebview){ state=await api().get_state(); renderPower(); await refreshStatus(); if(state.working&&state.working.length) renderStrategyList(state.working); }
+  }, 1700);
+};
 $("#cancelSearchBtn").onclick=()=>{ if(api().cancel_search) api().cancel_search(); if(deepMode&&window.FX) FX.forgeStop(); if(window.Dino) Dino.stop(); overlay.classList.remove("show"); _guardKeysBriefly(800); };
 $("#pickBtn").onclick=()=>{ renderStrategyList(state.working||[]); $("#pickModal").classList.add("show"); };
 $("#closePick").onclick=()=>$("#pickModal").classList.remove("show");

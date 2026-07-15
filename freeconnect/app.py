@@ -94,6 +94,40 @@ def _log(msg: str) -> None:
         pass
 
 
+def _is_offerable(item: dict) -> bool:
+    """Показывать стратегию пользователю? Да, если она строго рабочая ИЛИ реально
+    открывает Discord по сайтам. Второе — чтобы не прятать кандидата вроде ALT9
+    только из-за отрицательного (косвенного) UDP-замера голоса."""
+    return bool(item.get("working") or item.get("discord_sites_ok"))
+
+
+def _extract_exe_from_zip(zip_bytes: bytes, exe_name: str, dest) -> None:
+    """Достаёт установщик из codeload-архива зеркала (zip оборачивает файлы в подпапку)
+    в dest. Ищет по имени файла (суффиксу). Используется, когда GitHub недоступен и
+    обновление качается с SourceCraft (там анонимно доступны только codeload-архивы)."""
+    import io
+    import shutil as _sh
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        member = next((m for m in z.namelist()
+                       if m == exe_name or m.endswith("/" + exe_name)), None)
+        if not member:
+            raise RuntimeError(f"в архиве зеркала нет {exe_name}")
+        with z.open(member) as src, open(dest, "wb") as out:
+            _sh.copyfileobj(src, out)
+
+
+def _pick_recovery_candidate(working: list[dict], current: str | None) -> str | None:
+    """Кандидат для авто-переключения при деградации голоса/Discord: первая стратегия
+    с живым Discord (discord_ok), кроме текущей. None — подходящих нет (тогда вызывающий
+    просто перезапустит текущую, а не уедет на YouTube-only)."""
+    for w in working:
+        name = w.get("name")
+        if name and name != current and w.get("discord_ok"):
+            return name
+    return None
+
+
 def _score_to_item(sc: StrategyScore) -> dict:
     """StrategyScore -> словарь для JS (name как идентификатор)."""
     def svc(name: str) -> int:
@@ -101,6 +135,15 @@ def _score_to_item(sc: StrategyScore) -> dict:
             if s.service == name:
                 return sum(1 for x in s.sites if x.ok)
         return 0
+
+    def _svc(name: str):
+        for s in sc.services:
+            if s.service == name:
+                return s
+        return None
+
+    disc = _svc("discord")
+    yt = _svc("youtube")
     lat = sc.avg_latency_ms
     is_custom = (str(sc.strategy.id).startswith("custom_")
                  or sc.strategy.name.startswith("FreeConnect"))
@@ -109,6 +152,13 @@ def _score_to_item(sc: StrategyScore) -> dict:
         "name": sc.strategy.name,
         "discord": svc("discord"),
         "youtube": svc("youtube"),
+        # *_ok — сервис прошёл ПОЛНОСТЬЮ (для Discord — вместе с живым голосом/медиа).
+        # discord_sites_ok — Discord открыт хотя бы по TCP/TLS (сайты), даже если наш
+        # косвенный UDP-замер голоса дал минус. Нужно, чтобы recovery переключался
+        # только на Discord-способную стратегию, а автоподбор не прятал такую как ALT9.
+        "discord_ok": bool(disc.ok) if disc else False,
+        "youtube_ok": bool(yt.ok) if yt else False,
+        "discord_sites_ok": bool(disc.sites_ok) if disc else False,
         "latency": round(lat) if lat >= 0 else None,
         "working": sc.working,
         "custom": is_custom,
@@ -140,6 +190,10 @@ class Api:
         self.doh = DoHManager(log=_log)
         self._searching = False
         self._recovering = False
+        # Гайд-подтверждение голоса (ground truth от живого Discord): бэкенд включает
+        # кандидата и ждёт вердикт человека («Голос подключился!» / «Дальше»).
+        self._vc_event = threading.Event()
+        self._vc_verdict: bool | None = None
         self._last_recovery = 0.0
         self.recovery_cooldown = 30.0  # сек между авто-восстановлениями
         self._recover_count = 0        # сколько попыток восстановления подряд
@@ -155,7 +209,8 @@ class Api:
         self._diag_progress = None
         self._diag_thread = None
         # состояние проверки обновлений приложения (заполняет фоновый поток)
-        self._update_info: dict = {"available": False, "version": "", "url": "", "notes": ""}
+        self._update_info: dict = {"available": False, "version": "", "url": "", "notes": "",
+                                   "source": "", "exe": ""}
         # Очередь событий бэкенд->UI. КРИТИЧНО: evaluate_js нельзя звать из фоновых
         # потоков (WebView2: "can only be accessed from the UI thread" → флуд COM-
         # исключений и зависание окна). Поэтому фон только КЛАДЁТ событие в очередь,
@@ -303,6 +358,7 @@ class Api:
             ]
             files = [
                 paths.LOG_DIR / "debug.log",
+                paths.LOG_DIR / "debug.prev.log",  # прошлая сессия (до перезапуска/апдейта)
                 paths.LOG_DIR / "winws.log",
                 paths.CONFIG_PATH,
             ]
@@ -410,10 +466,12 @@ class Api:
             from . import app_update
             info = app_update.check()
             if info.get("error"):
-                _log(f"app update check: {info['error']}")
+                _log(f"app update check [{info.get('source', '?')}]: {info['error']}")
             else:
-                self._update_info = {k: info[k] for k in ("available", "version", "url", "notes")}
-                _log(f"app update: available={info['available']} version={info['version']!r}")
+                self._update_info = {k: info.get(k, "")
+                                     for k in ("available", "version", "url", "notes", "source", "exe")}
+                _log(f"app update [{info.get('source', '?')}]: "
+                     f"available={info['available']} version={info['version']!r}")
         except Exception as e:  # noqa: BLE001
             _log(f"app update check failed: {e}")
 
@@ -436,13 +494,21 @@ class Api:
         (мы уже под админом) и БЕЗ диалогов. Приложение само закроется, освободив
         файлы, а установщик после установки перезапустит его ([Run] без skipifsilent).
         Возвращает {ok} сразу; работа идёт в фоне, статус — через события."""
-        url = (self._update_info or {}).get("url", "")
-        if not (url.startswith(("http://", "https://")) and url.lower().endswith(".exe")):
+        info = self._update_info or {}
+        url = info.get("url", "")
+        source = info.get("source", "github")
+        exe_name = info.get("exe", "")
+        if source == "mirror":
+            # с зеркала (SourceCraft) установщик приходит в codeload-архиве (.zip)
+            if not (url.startswith(("http://", "https://")) and "/zipball/" in url):
+                return {"ok": False, "error": "нет ссылки на архив зеркала"}
+        elif not (url.startswith(("http://", "https://")) and url.lower().endswith(".exe")):
             return {"ok": False, "error": "нет прямой ссылки на установщик"}
-        threading.Thread(target=self._do_install_update, args=(url,), daemon=True).start()
+        threading.Thread(target=self._do_install_update, args=(url, source, exe_name),
+                         daemon=True).start()
         return {"ok": True}
 
-    def _do_install_update(self, url: str) -> None:
+    def _do_install_update(self, url: str, source: str = "github", exe_name: str = "") -> None:
         import shutil as _sh
         import urllib.request
         try:
@@ -457,9 +523,16 @@ class Api:
             bat = base / "FreeConnect-update.bat"
 
             req = urllib.request.Request(url, headers={"User-Agent": "FreeConnect"})
-            with urllib.request.urlopen(req, timeout=60) as r, open(setup, "wb") as f:
-                _sh.copyfileobj(r, f)
-            _log(f"update downloaded -> {setup} ({setup.stat().st_size} b)")
+            if source == "mirror":
+                # codeload-архив с установщиком внутри — качаем и распаковываем в setup.
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    data = r.read()
+                _extract_exe_from_zip(data, exe_name or "FreeConnect-Setup.exe", setup)
+                _log(f"update (mirror) extracted -> {setup} ({setup.stat().st_size} b)")
+            else:
+                with urllib.request.urlopen(req, timeout=60) as r, open(setup, "wb") as f:
+                    _sh.copyfileobj(r, f)
+                _log(f"update downloaded -> {setup} ({setup.stat().st_size} b)")
 
             # Трамплин: ждёт завершения тихого установщика, затем стартует приложение
             # как ОБЫЧНЫЙ запуск (start = ShellExecute) — чистое окружение, onefile
@@ -713,6 +786,14 @@ class Api:
 
     def cancel_search(self) -> None:
         self._cancel.set()
+        self._vc_event.set()   # разбудить ожидание гайд-подтверждения голоса
+
+    def voice_confirm_result(self, connected: bool) -> dict:
+        """Вердикт человека на текущего кандидата в гайд-проверке голоса:
+        True — «в Discord голос подключился», False — «дальше, не подключился»."""
+        self._vc_verdict = bool(connected)
+        self._vc_event.set()
+        return {"ok": True}
 
     def start_deep_search(self) -> None:
         if self._searching:
@@ -729,6 +810,12 @@ class Api:
         base = (self._find_strategy(base_name) if base_name else None) or self._find_strategy("ALT")
         if not base:
             base = load_strategies()[0]
+
+        # Точная проверка голоса: вместо STUN-прокси гайдим человека подтвердить голос
+        # в его живом Discord (единственный честный ground truth без залогина).
+        if self.cfg.get("voice_confirm", False):
+            self._run_deep_guided(base)
+            return
 
         ctx = {"i": 0, "total": 0}
 
@@ -782,6 +869,90 @@ class Api:
         self._searching = False
         self._push("onSearchDone", self._state()["working"])
 
+    def _run_deep_guided(self, base) -> None:
+        """Гайд-подтверждение голоса: собираем шорт-лист кандидатов (Discord открыт по
+        сайтам), затем по очереди включаем каждого и ждём, пока человек подтвердит в
+        живом Discord, что голос подключился. Первое «Да» — честно подтверждённая
+        стратегия, фиксируем её. winws под подтверждённым кандидатом НЕ перезапускаем,
+        чтобы не оборвать уже поднятый голос."""
+        from . import custom, deepsearch
+
+        def on_progress(i, total, cand):
+            self._push("onSearchProgress", i, total, cand.name)
+
+        shortlist: list = []
+        try:
+            _log("=== GUIDED VOICE: сбор шорт-листа (Discord по сайтам) ===")
+            shortlist = deepsearch.collect_site_candidates(
+                base, engine=self.engine, want=5, budget=90,
+                on_progress=on_progress, cancel=self._cancel)
+        except Exception as e:  # noqa: BLE001
+            self._push("onError", f"Ошибка поиска: {e}")
+
+        if self._cancel.is_set():
+            self._searching = False
+            self._push("onVoiceConfirmDone", {"confirmed": False, "cancelled": True})
+            return
+        if not shortlist:
+            _log("guided: кандидатов с открытым Discord не нашлось")
+            self._searching = False
+            self._push("onVoiceConfirmDone", {"confirmed": False, "empty": True})
+            return
+
+        confirmed = None
+        total = len(shortlist)
+        for idx, sc in enumerate(shortlist):
+            if self._cancel.is_set():
+                break
+            cand = sc.strategy
+            try:
+                self.engine.start(cand)   # поднимаем winws; застрявший Discord доберётся
+            except EngineError as e:
+                _log(f"guided: не поднять кандидата «{cand.name}»: {e}")
+                continue
+            self._vc_verdict = None
+            self._vc_event.clear()
+            self._push("onVoiceConfirmProbe", {"index": idx + 1, "total": total,
+                                               "name": cand.name})
+            _log(f"guided: кандидат {idx + 1}/{total} «{cand.name}» — жду вердикт человека")
+            got = self._vc_event.wait(timeout=90)   # даём человеку время увидеть и нажать
+            if self._cancel.is_set():
+                break
+            if got and self._vc_verdict:
+                saved = custom.add_custom(cand.args,
+                                          base_name=(base.name if base else "auto"),
+                                          label="голос подтверждён")
+                item = _score_to_item(sc)
+                item["name"] = item["id"] = saved.name
+                item["custom"] = True
+                item["discord_ok"] = True   # человек подтвердил живой голос
+                confirmed = item
+                self.strategy_name = saved.name
+                self.working = [item] + [w for w in self.working if w["name"] != saved.name]
+                self._save()
+                _log(f"guided: ПОДТВЕРЖДЁН голос на «{saved.name}»")
+                break
+
+        if confirmed:
+            # winws уже крутит подтверждённого кандидата — не перезапускаем, только
+            # доводим состояние до «включено» и поднимаем мониторы/DoH.
+            self.enabled = True
+            self._start_monitors()
+            self._start_doh_async()
+            self._push("onExternalState", self._state())
+        else:
+            try:
+                self.engine.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._searching = False
+        self._push("onVoiceConfirmDone", {
+            "confirmed": bool(confirmed),
+            "name": confirmed["name"] if confirmed else "",
+            "working": self._state()["working"],
+        })
+
     # ---- внутреннее: поиск ----
     def _run_search(self) -> None:
         # На время поиска гасим мониторы/обход.
@@ -798,7 +969,10 @@ class Api:
             total = len(load_strategies())
             self._push("onSearchResult", i, total, sc.strategy.name,
                        {"discord": item["discord"], "youtube": item["youtube"]})
-            if sc.working:
+            # Показываем стратегию, если она строго рабочая ИЛИ реально открывает
+            # Discord по сайтам — не прячем от юзера кандидата вроде ALT9 только из-за
+            # отрицательного (косвенного) UDP-замера голоса.
+            if sc.working or item["discord_sites_ok"]:
                 self._push("onSearchFound", item)
 
         try:
@@ -812,16 +986,21 @@ class Api:
             self._push("onError", f"Ошибка поиска: {e}")
             results = []
 
-        working = [_score_to_item(r) for r in results if r.working]
-        self.working = working
+        items = [_score_to_item(r) for r in results]
+        # «Предлагаемые» = строго рабочие (с живым голосом) ЛИБО те, где Discord открыт
+        # по сайтам. Второе — чтобы не прятать стратегию, которую юзер потом включает
+        # руками (кейс ALT9): наш UDP-замер голоса косвенный и может ошибиться в минус.
+        offerable = [it for it in items if _is_offerable(it)]
+        self.working = offerable
+        # Авто-включаем только строго проверенную лучшую (голос подтверждён); если такой
+        # нет — не навязываем, показываем список, юзер выберет (напр. тот же ALT9).
+        working = [it for it in offerable if it["working"]]
         if working:
-            # results отсортированы по баллу (голос учтён) → working[0] = лучшая.
             self.strategy_name = working[0]["name"]
             self._save()
-            # Применяем лучшую стратегию сразу.
             self.enable()
         self._searching = False
-        self._push("onSearchDone", working)
+        self._push("onSearchDone", offerable)
 
     # ---- мониторы (голос по UDP + доступность сервисов по TCP/TLS) ----
     def _start_monitors(self) -> None:
@@ -905,25 +1084,25 @@ class Api:
             self._recovering = False
 
     def _switch_to_next_working(self) -> None:
-        """Переключиться на следующую рабочую стратегию по кругу."""
-        names = [w["name"] for w in self.working if w.get("name")]
-        if not names:
-            # Альтернатив нет — просто перезапустим текущую.
+        """Переключиться на другую стратегию, УМЕЮЩУЮ Discord-голос.
+
+        Восстановление запускается при деградации голоса/Discord, поэтому переезжать
+        на YouTube-only стратегию бессмысленно (ровно тот баг: «сломался голос — а нас
+        перекинуло на ютуб»). Берём только кандидатов с живым Discord (discord_ok),
+        исключая текущую. Если таких нет — просто перезапускаем текущую, не трогая
+        рабочий YouTube."""
+        nxt = _pick_recovery_candidate(self.working, self.strategy_name)
+        if not nxt:
             strat = self._find_strategy(self.strategy_name) if self.strategy_name else None
             if strat:
-                _log("recovery: альтернатив нет, перезапуск текущей")
+                _log("recovery: нет альтернатив с живым Discord — перезапуск текущей")
                 self._push("onRecovering")
                 self.engine.start(strat)
             return
-        try:
-            i = names.index(self.strategy_name)
-        except ValueError:
-            i = -1
-        nxt = names[(i + 1) % len(names)]
         strat = self._find_strategy(nxt)
         if not strat:
             return
-        _log(f"recovery: ПЕРЕКЛЮЧЕНИЕ «{self.strategy_name}» -> «{nxt}»")
+        _log(f"recovery: ПЕРЕКЛЮЧЕНИЕ «{self.strategy_name}» -> «{nxt}» (живой Discord)")
         self._push("onRecovering")
         self.engine.start(strat)
         self.strategy_name = nxt
@@ -968,11 +1147,21 @@ def run(argv: list[str] | None = None) -> None:
         return
 
     paths.ensure_dirs()
+    # НЕ затираем прошлый лог: сохраняем его в debug.prev.log. Иначе перезапуск (в т.ч.
+    # авто-восстановление/переоткрытие после апдейта) стирал улики предыдущей сессии —
+    # именно из-за этого баги «после обновления» приходилось диагностировать вслепую.
     try:
-        (paths.LOG_DIR / "debug.log").write_text("", encoding="utf-8")
+        cur = paths.LOG_DIR / "debug.log"
+        if cur.exists():
+            prev = paths.LOG_DIR / "debug.prev.log"
+            try:
+                prev.unlink()
+            except FileNotFoundError:
+                pass
+            cur.replace(prev)
     except Exception:
         pass
-    _log(f"=== run start (args={args}) ===")
+    _log(f"=== run start (v{__version__}, args={args}) ===")
     _provision_runtime()  # первый запуск .exe: развернуть рантайм в ASCII-путь
     _sanitize_lists()     # снять BOM со списков (иначе winws не грузит ipset)
 

@@ -15,6 +15,8 @@ DEFAULTS: dict[str, Any] = {
     "onboarded": False,     # обучение уже пройдено (иначе localStorage стирается WebView2)
     "game_filter": False,   # покрывать игровой трафик (порты 1024-65535) — для игр
     "doh": False,           # DNS-over-HTTPS: шифровать DNS, обходить DNS-подмену (опция)
+    "voice_confirm": False, # точная проверка голоса: при генерации своих стратегий гайдить
+                            # юзера подтвердить в живом Discord (ground truth, а не STUN-прокси)
     "strategies_updated_at": 0,  # unixtime последнего автообновления стратегий из upstream
 }
 

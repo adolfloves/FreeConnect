@@ -2,7 +2,8 @@
 import struct
 import unittest
 
-from freeconnect.tester import ServiceResult, SiteResult, _stun_packet
+from freeconnect import tester
+from freeconnect.tester import ServiceResult, SiteResult, _stun_packet, check_voice
 
 
 def _svc(service, n_ok, n_total, voice=None):
@@ -45,6 +46,42 @@ class TestVoiceGating(unittest.TestCase):
 
     def test_discord_live_voice_ok(self):
         self.assertTrue(_svc("discord", 3, 3, voice=True).ok)
+
+
+class TestVoiceRetry(unittest.TestCase):
+    """Разовая сетевая осечка не должна помечать голос как мёртвый (иначе прячем
+    рабочую стратегию, как было с ALT9)."""
+
+    def setUp(self):
+        self._orig = tester.stun_burst
+
+    def tearDown(self):
+        tester.stun_burst = self._orig
+
+    def test_retry_recovers_from_transient_miss(self):
+        calls = {"n": 0}
+
+        def fake_burst(server, count, timeout, pad=0):
+            # первый прогон мелких проб — полная потеря; ретрай — все ответили.
+            if pad == 0:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return count, []                       # осечка
+                return count, [30.0] * count               # норм
+            return count, [31.0]                           # большой пакет прошёл
+
+        tester.stun_burst = fake_burst
+        res = check_voice(attempts=5, timeout=0.01, retries=1)
+        self.assertTrue(res.voice_ok)          # ретрай спас голос
+        self.assertEqual(res.voice_loss, 0.0)
+
+    def test_no_retry_left_reports_dead(self):
+        def fake_burst(server, count, timeout, pad=0):
+            return count, []                               # всегда молчит
+
+        tester.stun_burst = fake_burst
+        res = check_voice(attempts=5, timeout=0.01, retries=1)
+        self.assertFalse(res.voice_ok)         # реально мёртвый UDP — честный минус
 
 
 if __name__ == "__main__":

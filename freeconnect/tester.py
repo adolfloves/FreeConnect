@@ -278,7 +278,7 @@ def stun_burst(server: tuple[str, int], count: int, timeout: float,
     return count, rtts
 
 
-def check_voice(attempts: int = 5, timeout: float = 1.6) -> ServiceResult:
+def check_voice(attempts: int = 5, timeout: float = 1.6, retries: int = 1) -> ServiceResult:
     """Многометричная авто-проверка UDP-пути голоса/демонстрации Discord.
 
     Меряет не только RTT, а связку сигналов (всё в фоне, без участия человека):
@@ -292,16 +292,30 @@ def check_voice(attempts: int = 5, timeout: float = 1.6) -> ServiceResult:
     Оговорка сохраняется: STUN — прокси UDP-пути, а не сам медиасервер Discord.
     Но многометрика ловит большинство случаев «STUN пингуется, а медиа мёртвая»
     (высокие потери / джиттер / провал больших пакетов). Пороги калибруются по логам.
+
+    retries — при «мёртвом»/потерянном первом замере делаем ещё попытку и берём
+    лучший результат: разовая сетевая осечка не должна пометить рабочую стратегию
+    (напр. ALT9) как «без голоса» и спрятать её от пользователя.
     """
     out = ServiceResult(service="_voice")
+
+    def _measure() -> tuple[tuple[str, int] | None, list[float]]:
+        for srv in STUN_SERVERS:
+            _, rtts = stun_burst(srv, count=attempts, timeout=timeout, pad=0)
+            if rtts:
+                return srv, rtts
+        return None, []
+
     # Берём первый STUN-сервер, который вообще отвечает на мелкие пробы.
-    small_rtts: list[float] = []
-    used = None
-    for srv in STUN_SERVERS:
-        _, small_rtts = stun_burst(srv, count=attempts, timeout=timeout, pad=0)
-        if small_rtts:
-            used = srv
-            break
+    used, small_rtts = _measure()
+    tries = 0
+    while tries < retries and (
+        not small_rtts or (1.0 - len(small_rtts) / max(1, attempts)) > VOICE_LOSS_MAX
+    ):
+        tries += 1
+        u2, r2 = _measure()
+        if len(r2) > len(small_rtts):   # оставляем лучший из прогонов
+            used, small_rtts = u2, r2
     if not used or not small_rtts:
         out.voice_ok, out.voice_rtt = False, -1.0
         out.voice_conf, out.voice_detail = "high", "UDP мёртв: STUN не отвечает"

@@ -177,7 +177,35 @@
     <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
     <div class="scan-count" id="scanCount">0 / 0</div>
     <div class="found-list" id="foundList"></div>
+    <!-- Гайд-подтверждение голоса: показывается, когда бэкенд перебирает кандидатов -->
+    <div class="vc-panel" id="vcPanel" style="display:none">
+      <div class="vc-hint">Посмотри в Discord: в голосовом канале голос <b>подключился</b>?</div>
+      <div class="vc-actions">
+        <button class="btn primary" id="vcYes">✓ Голос подключился!</button>
+        <button class="btn ghost small" id="vcNext">Не подключился — дальше</button>
+      </div>
+    </div>
     <button class="btn ghost small" id="cancelSearchBtn">Отменить</button>
+  </div>
+</div>
+
+<!-- Модалка подготовки к точной проверке голоса -->
+<div class="modal" id="voiceSetupModal">
+  <div class="modal-card">
+    <div class="modal-head"><b>Точная проверка голоса</b></div>
+    <div class="modal-body">
+      <p>Сейчас подберём стратегию и проверим голос по-настоящему — твоими глазами.</p>
+      <ol style="padding-left:18px;line-height:1.7">
+        <li>Открой <b>Discord</b>.</li>
+        <li>Зайди в любой <b>голосовой канал</b> (пусть висит «Подключение…»).</li>
+        <li>Вернись сюда и жми <b>Готово</b>.</li>
+      </ol>
+      <p class="settings-note">Мы будем перебирать стратегии. Как только в Discord голос подключится — нажмёшь кнопку, и мы закрепим эту стратегию.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost small" id="voiceSetupCancel">Отмена</button>
+      <button class="btn primary" id="voiceSetupDone">Готово</button>
+    </div>
   </div>
 </div>
 
@@ -217,6 +245,10 @@
         <span class="switch"><input type="checkbox" id="optDoh"><span class="slider"></span></span>
       </label>
       <div class="settings-note" id="dohNote" style="display:none;color:#ff8a6a">Не удалось включить DNS-over-HTTPS — проверь интернет и что порт 53 свободен.</div>
+      <label class="toggle-row">
+        <span>Точная проверка голоса<small class="toggle-sub">при создании своей стратегии попросит зайти в голосовой канал Discord и подтвердить, что голос реально подключился — без ложных «работает»</small></span>
+        <span class="switch"><input type="checkbox" id="optVoiceConfirm"><span class="slider"></span></span>
+      </label>
       <button class="btn ghost" id="replayTour" style="width:100%;margin-top:8px">Показать обучение снова</button>
       <button class="btn ghost" id="sendLogs" style="width:100%;margin-top:8px">Собрать логи для поддержки</button>
       <div class="settings-note" id="logsNote">winws.exe часто ложно определяется антивирусом — это нормально для обхода блокировок.</div>

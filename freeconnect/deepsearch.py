@@ -193,6 +193,46 @@ def generate_candidates(bases: list[Strategy], budget: int, seed: int = 0) -> li
     return out[:budget]
 
 
+def collect_site_candidates(
+    base: Strategy,
+    engine: Engine | None = None,
+    want: int = 5,
+    budget: int = 60,
+    timeout: float = 5.0,
+    settle: float = 4.0,
+    services: list[str] | None = None,
+    on_progress: Callable[[int, int, Strategy], None] | None = None,
+    cancel: threading.Event | None = None,
+) -> list[StrategyScore]:
+    """Для гайд-режима голоса: генерит кандидатов и возвращает первые `want`, у кого
+    Discord открыт ПО САЙТАМ (TCP/TLS). Голос здесь НЕ проверяем — его глазами
+    подтвердит человек в живом Discord (единственный честный ground truth без залогина).
+
+    winws гасится в конце; выбранного кандидата вызывающий поднимает заново сам.
+    """
+    from . import tester
+    svcs = services or list(tester.DEFAULT_TARGETS.keys())
+    bases = pick_bases(base)
+    candidates = generate_candidates(bases, budget)
+    eng = engine or Engine()
+    out: list[StrategyScore] = []
+    try:
+        for i, cand in enumerate(candidates):
+            if cancel is not None and cancel.is_set():
+                break
+            if on_progress:
+                on_progress(i, len(candidates), cand)
+            sc = evaluate_strategy(eng, cand, svcs, timeout=timeout, settle=settle)
+            disc = next((s for s in sc.services if s.service == "discord"), None)
+            if disc and disc.sites_ok:
+                out.append(sc)
+                if len(out) >= want:
+                    break
+    finally:
+        eng.stop()
+    return out
+
+
 def deep_search(
     base: Strategy,
     services: list[str] | None = None,
