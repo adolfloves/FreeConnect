@@ -582,13 +582,31 @@ window.onUpdateError=(msg)=>{
 };
 if($("#updateClose")) $("#updateClose").onclick=()=>{ _updateDismissed=true; $("#updateBanner").hidden=true; };
 if($("#checkUpdate")) $("#checkUpdate").onclick=async()=>{
-  const b=$("#checkUpdate"), o=b.textContent; b.disabled=true; b.textContent="Проверяю…";
+  const b=$("#checkUpdate");
+  // Если проверка уже нашла обновление — второй клик СТАВИТ его прямо из настроек
+  // (баннер сверху перекрыт окном настроек, поэтому даём действие здесь же).
+  if(b.dataset.mode==="update"){
+    b.disabled=true; b.textContent="Обновляю…";
+    try{
+      const r = api().install_update ? await api().install_update() : null;
+      if(r && r.ok) return;                        // пойдёт тихая установка + перезапуск
+      _manualUpdate((state&&state.update)||{});     // нет тихого пути — открыть ссылку
+    }catch(e){ _manualUpdate((state&&state.update)||{}); }
+    b.disabled=false; return;
+  }
+  const o=b.textContent; b.disabled=true; b.textContent="Проверяю…";
   try{
     const u = api().check_app_update ? await api().check_app_update() : null;
     if(u){ if(state) state.update=u; renderUpdate();
-      b.textContent = u.available ? ("Есть "+(u.version||"новая")) : "Актуальная версия";
+      if(u.available){                             // нашли — превращаем кнопку в действие
+        b.dataset.mode="update";
+        b.textContent="Обновить до "+(u.version||"новой");
+        b.disabled=false; return;
+      }
+      b.textContent="Актуальная версия";
     }else b.textContent=o;
   }catch(e){ b.textContent=o; }
+  b.dataset.mode="";
   setTimeout(()=>{ b.disabled=false; b.textContent=o; }, 3000);
 };
 
