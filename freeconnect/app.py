@@ -666,10 +666,12 @@ class Api:
             "auto_enable": self.cfg.get("auto_enable", True),
             "game_filter": self.cfg.get("game_filter", False),
             "doh": self.cfg.get("doh", False),
+            "voice_confirm": self.cfg.get("voice_confirm", False),
         }
 
     def set_setting(self, key: str, value) -> dict:
-        if key not in ("autostart", "monitor", "auto_enable", "game_filter", "doh"):
+        if key not in ("autostart", "monitor", "auto_enable", "game_filter", "doh",
+                       "voice_confirm"):
             return self.get_settings()
         val = bool(value)
         if key == "autostart":
@@ -1004,9 +1006,15 @@ class Api:
 
     # ---- мониторы (голос по UDP + доступность сервисов по TCP/TLS) ----
     def _start_monitors(self) -> None:
-        if self.cfg.get("monitor", True):
+        if not self.cfg.get("monitor", True):
+            return
+        # STUN-монитор голоса запускаем ТОЛЬКО когда точная проверка голоса выключена:
+        # его сигнал (пинг Google STUN) ненадёжен и на части сетей STUN мёртв вовсе —
+        # тогда он ложно «роняет» и переключает даже стратегию, где голос реально живой
+        # (в т.ч. подтверждённую человеком). С voice_confirm доверяем человеку + watchdog.
+        if not self.cfg.get("voice_confirm", False):
             self.monitor.start()
-            self.watchdog.start()
+        self.watchdog.start()
 
     def _stop_monitors(self) -> None:
         self.monitor.stop()

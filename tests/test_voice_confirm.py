@@ -137,5 +137,56 @@ class TestGuidedVoiceConfirm(unittest.TestCase):
         self.assertFalse(t.is_alive())
 
 
+class TestVoiceConfirmSetting(unittest.TestCase):
+    """Регресс: флаг voice_confirm должен читаться get_settings и сохраняться
+    set_setting — иначе кнопка «Глубокий поиск» не увидит его и гайд не запустится
+    (ровно тот баг, что фича «ничего не делала»)."""
+
+    def test_roundtrip(self):
+        from freeconnect import config
+        api = fcapp.Api.__new__(fcapp.Api)
+        api.cfg = {"voice_confirm": False, "monitor": True, "auto_enable": True,
+                   "game_filter": False, "doh": False}
+        api.enabled = False
+        orig = config.save
+        config.save = lambda cfg: None
+        try:
+            self.assertIn("voice_confirm", api.get_settings())
+            self.assertFalse(api.get_settings()["voice_confirm"])
+            api.set_setting("voice_confirm", True)
+            self.assertTrue(api.cfg["voice_confirm"])                 # сохранилось
+            self.assertTrue(api.get_settings()["voice_confirm"])      # и читается
+        finally:
+            config.save = orig
+
+
+class TestMonitorGating(unittest.TestCase):
+    """При voice_confirm ON ненадёжный STUN-монитор голоса НЕ поднимается (иначе он
+    ложно уронил бы подтверждённую человеком стратегию); watchdog по сайтам — да."""
+
+    def _api(self, voice_confirm):
+        api = fcapp.Api.__new__(fcapp.Api)
+        api.cfg = {"monitor": True, "voice_confirm": voice_confirm}
+
+        class _M:
+            def __init__(s): s.started = False
+            def start(s): s.started = True
+        api.monitor = _M()
+        api.watchdog = _M()
+        return api
+
+    def test_voice_confirm_skips_stun_monitor(self):
+        api = self._api(True)
+        api._start_monitors()
+        self.assertFalse(api.monitor.started)   # STUN-монитор НЕ поднят
+        self.assertTrue(api.watchdog.started)    # watchdog поднят
+
+    def test_off_starts_both(self):
+        api = self._api(False)
+        api._start_monitors()
+        self.assertTrue(api.monitor.started)
+        self.assertTrue(api.watchdog.started)
+
+
 if __name__ == "__main__":
     unittest.main()
