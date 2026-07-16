@@ -17,6 +17,8 @@ DEFAULTS: dict[str, Any] = {
     "doh": False,           # DNS-over-HTTPS: шифровать DNS, обходить DNS-подмену (опция)
     "voice_confirm": False, # точная проверка голоса: при генерации своих стратегий гайдить
                             # юзера подтвердить в живом Discord (ground truth, а не STUN-прокси)
+    "voice_watch": False,   # эксперим.: пассивный детектор голоса через WinDivert SNIFF —
+                            # ловит односторонний/мёртвый медиапоток Discord и авто-чинит
     "strategies_updated_at": 0,  # unixtime последнего автообновления стратегий из upstream
 }
 

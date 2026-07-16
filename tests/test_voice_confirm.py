@@ -41,6 +41,9 @@ def _fake_api():
         def stop(self, *a, **k):
             _Eng.stopped += 1
     api.engine = _Eng()
+    # изолируем от реального custom_strategies.json на диске: гайд поднимает сам
+    # sc.strategy кандидата, а не найденную по имени запись
+    api._find_strategy = lambda n: None
     api._save = lambda: None
     api._start_monitors = lambda: None
     api._start_doh_async = lambda: None
@@ -63,6 +66,15 @@ class TestGuidedVoiceConfirm(unittest.TestCase):
     def setUp(self):
         self._collect = deepsearch.collect_site_candidates
         self._add = custom.add_custom
+        # Пул сохраняется для ВСЕХ кандидатов (нужен ручной кнопке): счётчик даёт
+        # уникальные имена, чтобы не писать в реальный custom_strategies.json.
+        self._n = 0
+
+        def _fake_add(args, base_name=None, label=None):
+            self._n += 1
+            nm = f"FreeConnect #{self._n}" + (f" {label}" if label else "")
+            return Strategy(id=f"custom_{self._n}", name=nm, source_bat="x", args=args)
+        custom.add_custom = _fake_add
 
     def tearDown(self):
         deepsearch.collect_site_candidates = self._collect
@@ -70,9 +82,6 @@ class TestGuidedVoiceConfirm(unittest.TestCase):
 
     def test_confirm_locks_current_candidate(self):
         deepsearch.collect_site_candidates = lambda *a, **k: [_sc("c1"), _sc("c2")]
-        custom.add_custom = lambda args, base_name=None, label=None: Strategy(
-            id="FreeConnect #1", name="FreeConnect #1 голос подтверждён",
-            source_bat="x", args=args)
         api = _fake_api()
         base = Strategy(id="ALT", name="ALT", source_bat="x", args=[])
         t = threading.Thread(target=api._run_deep_guided, args=(base,))
@@ -81,15 +90,30 @@ class TestGuidedVoiceConfirm(unittest.TestCase):
         api.voice_confirm_result(True)             # человек: «голос подключился»
         t.join(timeout=3)
         self.assertFalse(t.is_alive())
-        self.assertIn("подтверждён", api.strategy_name)
+        self.assertEqual(api.strategy_name, "FreeConnect #1 All")   # первый кандидат
         self.assertTrue(api.enabled)
+        # подтверждённая помечена флагами для recovery/ручного переключения
+        conf = next(w for w in api.working if w["name"] == api.strategy_name)
+        self.assertTrue(conf["discord_ok"] and conf.get("voice_confirmed"))
         done = [a[0] for ev, a in api._pushes if ev == "onVoiceConfirmDone"]
         self.assertTrue(done and done[0]["confirmed"])
 
+    def test_saves_whole_pool_as_alternatives(self):
+        # Весь шорт-лист сохраняется в working — иначе ручной кнопке нечего переключать.
+        deepsearch.collect_site_candidates = lambda *a, **k: [_sc("c1"), _sc("c2"), _sc("c3")]
+        api = _fake_api()
+        base = Strategy(id="ALT", name="ALT", source_bat="x", args=[])
+        t = threading.Thread(target=api._run_deep_guided, args=(base,))
+        t.start()
+        self.assertTrue(_wait_probe(api))
+        api.voice_confirm_result(True)
+        t.join(timeout=3)
+        # 3 кандидата -> 3 своих стратегии в пуле, у всех открыт Discord по сайтам
+        self.assertEqual(len(api.working), 3)
+        self.assertTrue(all(w["discord_sites_ok"] for w in api.working))
+
     def test_next_then_confirm_second(self):
         deepsearch.collect_site_candidates = lambda *a, **k: [_sc("c1"), _sc("c2")]
-        custom.add_custom = lambda args, base_name=None, label=None: Strategy(
-            id="ok", name="FreeConnect #2 голос подтверждён", source_bat="x", args=args)
         api = _fake_api()
         base = Strategy(id="ALT", name="ALT", source_bat="x", args=[])
         t = threading.Thread(target=api._run_deep_guided, args=(base,))
@@ -101,7 +125,12 @@ class TestGuidedVoiceConfirm(unittest.TestCase):
         t.join(timeout=3)
         probes = [a[0] for ev, a in api._pushes if ev == "onVoiceConfirmProbe"]
         self.assertEqual(len(probes), 2)           # дошли до второго кандидата
-        self.assertEqual(api.engine.started, ["c1", "c2"])
+        # Первый старт — бутстрап-обход (чтобы Discord открылся ещё до просьбы зайти
+        # в канал), затем перебор кандидатов c1, c2.
+        self.assertEqual(api.engine.started[0], "ALT")           # бутстрап на базе
+        self.assertEqual(api.engine.started[-2:], ["c1", "c2"])  # затем кандидаты
+        boot = [ev for ev, a in api._pushes if ev == "onGuidedBootstrap"]
+        self.assertEqual(len(boot), 1)             # UI получил сигнал «обход включён»
 
     def test_no_confirm_reports_unconfirmed(self):
         deepsearch.collect_site_candidates = lambda *a, **k: [_sc("only")]
@@ -135,6 +164,36 @@ class TestGuidedVoiceConfirm(unittest.TestCase):
         api._vc_event.set()                        # как cancel_search
         t.join(timeout=3)
         self.assertFalse(t.is_alive())
+
+
+def _sc_lat(name, disc_sites, yt_sites, lat):
+    st = Strategy(id=name, name=name, source_bat="x", args=["--a"])
+    disc = ServiceResult(service="discord",
+                         sites=[SiteResult(host=f"d{i}", ok=disc_sites, latency_ms=lat)
+                                for i in range(3)])
+    yt = ServiceResult(service="youtube",
+                       sites=[SiteResult(host=f"y{i}", ok=yt_sites, latency_ms=lat)
+                              for i in range(3)])
+    return StrategyScore(strategy=st, services=[disc, yt])
+
+
+class TestShortlistSort(unittest.TestCase):
+    """Регресс: закрепляли #8 c 1038мс, хотя рядом лежал 172мс. Шорт-лист теперь
+    сортируется: сперва «All» (Discord+YouTube по сайтам), затем по задержке."""
+
+    def test_all_first_then_latency(self):
+        items = [
+            _sc_lat("slow_all", True, True, 1038),
+            _sc_lat("fast_all", True, True, 172),
+            _sc_lat("disc_only", True, False, 120),   # быстрее, но не All -> в хвост
+        ]
+        items.sort(key=deepsearch._shortlist_sort_key)
+        self.assertEqual([i.strategy.name for i in items],
+                         ["fast_all", "slow_all", "disc_only"])
+
+    def test_all_sites_ok_predicate(self):
+        self.assertTrue(deepsearch._all_sites_ok(_sc_lat("a", True, True, 100)))
+        self.assertFalse(deepsearch._all_sites_ok(_sc_lat("b", True, False, 100)))
 
 
 class TestVoiceConfirmSetting(unittest.TestCase):

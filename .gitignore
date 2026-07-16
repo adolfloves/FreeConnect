@@ -17,7 +17,6 @@ venv/
 FreeConnect-логи-*.zip
 
 # Среда / IDE
-.claude/
 .idea/
 .vscode/
 *.tmp

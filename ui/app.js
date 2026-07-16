@@ -24,6 +24,12 @@ const MockApi = {
   async enable(){ this._state.enabled=true; return this._state; },
   async disable(){ this._state.enabled=false; return this._state; },
   async pick_strategy(id){ this._state.strategy=id; this._state.enabled=true; return this._state; },
+  async manual_voice_switch(){
+    const w=(this._state.working||[]).filter(x=>x.name!==this._state.strategy);
+    if(!w.length) return {switched:false, name:"", reason:"no_candidates"};
+    this._state.strategy=w[0].name; this._state.enabled=true;
+    return {switched:true, name:w[0].name, reason:""};
+  },
   async status(){
     if(!this._state.enabled) return {discord:null,youtube:null,voice:null};
     return {discord:{ok:true,latency:142},youtube:{ok:true,latency:168},voice:{rtt:38}};
@@ -101,6 +107,8 @@ function renderPower(){
     statusLine.classList.remove("on");
   }
   currentStrategy.textContent = state.strategy || "не выбрана";
+  // Кнопка ручной смены стратегии видна, только когда обход включён (иначе нечего чинить).
+  const vsb=$("#voiceSwitchBtn"); if(vsb) vsb.style.display = state.enabled ? "" : "none";
   // Заряд молнии дотягивается до 100% ровно когда обход активен (или падает до 0)
   setCharge(state.enabled ? 1 : 0, 450);
 }
@@ -271,7 +279,8 @@ window.onSearchFound=(item)=>{
 };
 window.onSearchDone=(working)=>{
   if(deepMode && window.FX) FX.forgeStop();
-  scanCurrent.textContent = working.length ? `Найдено рабочих: ${working.length}` : "Рабочих не найдено";
+  if(refreshMode) scanCurrent.textContent = `Список обновлён: ${working.length}`;
+  else scanCurrent.textContent = working.length ? `Найдено рабочих: ${working.length}` : "Рабочих не найдено";
   progressBar.style.width="100%";
   setTimeout(async()=>{
     overlay.classList.remove("show");
@@ -280,6 +289,7 @@ window.onSearchDone=(working)=>{
     state=await api().get_state();
     renderPower(); await refreshStatus();
     if(state.working && state.working.length) renderStrategyList(state.working);
+    if(refreshMode){ refreshMode=false; $("#pickModal").classList.add("show"); }  // вернуть список
   }, 1100);
 };
 
@@ -297,7 +307,10 @@ function renderStrategyList(working){
   const list=$("#strategyList");
   const header=`<div class="strat-head">
       <div class="strat-legend">Стратегии, которые открывают сервисы у тебя. Сверху — лучшие.</div>
-      ${working.length?'<button class="strat-clear" id="clearAllBtn">Очистить все</button>':''}
+      <div class="strat-head-btns">
+        ${working.length?'<button class="strat-refresh" id="refreshListBtn" aria-label="Обновить список" title="Пере-тест: заново проверить пинг и доступность Discord/YouTube, отсортировать"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></button>':''}
+        ${working.length?'<button class="strat-clear" id="clearAllBtn">Очистить все</button>':''}
+      </div>
     </div>`;
   if(!working.length){ list.innerHTML=header+`<div class="strat-meta">Сначала выполни автоподбор.</div>`; return; }
   list.innerHTML=header;
@@ -359,6 +372,45 @@ function renderStrategyList(working){
       renderPower();
     };
   }
+  const refreshBtn=$("#refreshListBtn");
+  if(refreshBtn) refreshBtn.onclick=openRefresh;
+}
+
+// Пере-тест сохранённых стратегий (кнопка «↻ Обновить» в списке): переиспользуем
+// оверлей поиска как индикатор прогресса. Ничего не генерируем — только заново меряем.
+let refreshMode=false;
+function openRefresh(){
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  refreshMode=true;
+  $("#pickModal").classList.remove("show");   // спрячем список, вернём после
+  overlay.classList.add("show");
+  $("#vcPanel").style.display="none"; $("#foundList").style.display=""; $("#dinoWrap").style.display="";
+  $("#radar").style.display=""; $("#forge").style.display="none";
+  foundList.innerHTML=""; progressBar.style.width="0%"; scanCount.textContent="0 / 0";
+  deepMode=false; deepFound=0;
+  scanTitle.textContent="Обновляю список стратегий";
+  scanCurrent.textContent="перезапускаю по очереди и меряю…";
+  if(window.Dino) requestAnimationFrame(()=>Dino.start($("#dinoCanvas")));
+  if(window.pywebview && api().refresh_strategies) api().refresh_strategies();
+  else mockRefresh();
+}
+// Мок пере-теста для браузерного превью.
+function mockRefresh(){
+  const items=(MockApi._state.working||[]).slice();
+  let i=0; const total=items.length||1;
+  const t=setInterval(()=>{
+    if(i>=items.length){
+      clearInterval(t);
+      items.sort((a,b)=>((b.discord>=3)+(b.youtube>=3))-((a.discord>=3)+(a.youtube>=3)) || (a.latency||9999)-(b.latency||9999));
+      MockApi._state.working=items;
+      window.onSearchDone(items); return;
+    }
+    const w=items[i];
+    if(w) w.latency=120+Math.round(Math.random()*120);
+    window.onSearchProgress(i,total,(w&&w.name)||"?");
+    window.onSearchResult(i,total,(w&&w.name)||"?",{discord:0,youtube:0});
+    i++;
+  }, 260);
 }
 
 // ---------- События от бэкенда ----------
@@ -403,6 +455,7 @@ async function loadSettings(){
     if($("#optGameFilter")) $("#optGameFilter").checked=!!s.game_filter;
     if($("#optDoh")) $("#optDoh").checked=!!s.doh;
     if($("#optVoiceConfirm")) $("#optVoiceConfirm").checked=!!s.voice_confirm;
+    if($("#optVoiceWatch")) $("#optVoiceWatch").checked=!!s.voice_watch;
   }catch(e){}
 }
 function wireSetting(id,key){
@@ -414,6 +467,15 @@ wireSetting("#optMonitor","monitor");
 wireSetting("#optGameFilter","game_filter");
 wireSetting("#optDoh","doh");
 wireSetting("#optVoiceConfirm","voice_confirm");
+wireSetting("#optVoiceWatch","voice_watch");
+// Детектор голоса сообщил, что голос односторонний/мёртвый — уведомляем и подсказываем.
+window.onVoiceDead=(info)=>{
+  toast("Голос замолчал — чиню. Если не поможет, смени регион голосового канала (Настройки сервера → Регион).", "warn");
+};
+// Перебраны все стратегии, голос так и не поднялся — это уже путь/RTC-сервер, а не стратегия.
+window.onRecoveryExhausted=()=>{
+  toast("Перепробовал все стратегии — голос не держится. Похоже, дело в Discord-сервере: смени РЕГИОН голосового канала (Настройки канала → Регион).", "warn");
+};
 // Отражаем реальный результат включения DoH (смена DNS идёт в фоне и может не удаться).
 window.onDohState=(ok)=>{
   const el=$("#optDoh"); if(el) el.checked=!!ok;
@@ -433,12 +495,17 @@ $("#deepBtn").onclick=async()=>{
 };
 $("#voiceSetupCancel").onclick=()=>$("#voiceSetupModal").classList.remove("show");
 $("#voiceSetupDone").onclick=()=>{ $("#voiceSetupModal").classList.remove("show"); openDeep(); };
+// Гайд: обход включён на бутстрап-стратегии — Discord уже может открыться.
+window.onGuidedBootstrap=(info)=>{
+  scanTitle.textContent="Обход включён — подбираю стратегию";
+  scanCurrent.textContent="Открой Discord (в канал пока не заходи) — сейчас попросим проверить голос.";
+};
 // Гайд-подтверждение голоса: бэкенд включил кандидата и ждёт вердикт человека.
 window.onVoiceConfirmProbe=(info)=>{
   if(window.FX) FX.forgeStop(); if(window.Dino) Dino.stop();
   $("#forge").style.display="none"; $("#dinoWrap").style.display="none"; $("#foundList").style.display="none";
   scanTitle.textContent=`Проверка голоса — кандидат ${info.index} / ${info.total}`;
-  scanCurrent.textContent="Смотри в Discord: голос в канале подключился?";
+  scanCurrent.textContent="Обход включён — зайди в голосовой канал Discord.";
   $("#vcPanel").style.display="block";
 };
 $("#vcYes").onclick=()=>{ if(api().voice_confirm_result) api().voice_confirm_result(true); $("#vcPanel").style.display="none"; scanCurrent.textContent="Фиксирую стратегию…"; };
@@ -454,6 +521,36 @@ window.onVoiceConfirmDone=(res)=>{
     $("#forge").style.display=""; $("#dinoWrap").style.display=""; $("#foundList").style.display="";
     if(window.pywebview){ state=await api().get_state(); renderPower(); await refreshStatus(); if(state.working&&state.working.length) renderStrategyList(state.working); }
   }, 1700);
+};
+// Лёгкий тост (эфемерное уведомление) — для результата ручной смены стратегии.
+let _toastT=null;
+function toast(msg, kind){
+  let t=$("#toast");
+  if(!t){ t=document.createElement("div"); t.id="toast"; document.body.appendChild(t); }
+  t.textContent=msg; t.className="toast show"+(kind?(" "+kind):"");
+  clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove("show"), 3200);
+}
+// Ручная смена стратегии при лагающем голосе: авто-детект смерти Discord-войса без
+// залогина невозможен, поэтому переключаем по клику на следующую Discord-стратегию.
+let _switchBusy=false;
+$("#voiceSwitchBtn").onclick=async()=>{
+  if(_switchBusy) return;
+  if(!api().manual_voice_switch){ toast("Недоступно в этом режиме"); return; }
+  _switchBusy=true;
+  const btn=$("#voiceSwitchBtn"); const old=btn.textContent;
+  btn.disabled=true; btn.textContent="Переключаю…";
+  try{
+    const r=await api().manual_voice_switch();
+    if(r && r.switched){
+      toast("Переключил на: "+r.name+". Проверь голос в Discord.", "ok");
+      if(window.pywebview){ state=await api().get_state(); renderPower(); await refreshStatus(); }
+    }else if(r && r.reason==="no_candidates"){
+      toast("Нет других Discord-стратегий — запусти подбор заново.", "warn");
+    }else{
+      toast("Не удалось переключиться. Попробуй подбор заново.", "warn");
+    }
+  }catch(e){ toast("Ошибка переключения", "warn"); }
+  finally{ _switchBusy=false; btn.disabled=false; btn.textContent=old; }
 };
 $("#cancelSearchBtn").onclick=()=>{ if(api().cancel_search) api().cancel_search(); if(deepMode&&window.FX) FX.forgeStop(); if(window.Dino) Dino.stop(); overlay.classList.remove("show"); _guardKeysBriefly(800); };
 $("#pickBtn").onclick=()=>{ renderStrategyList(state.working||[]); $("#pickModal").classList.add("show"); };

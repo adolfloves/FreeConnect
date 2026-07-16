@@ -16,6 +16,7 @@ datas = [
 hiddenimports = []
 hiddenimports += collect_submodules('webview')   # backend winforms/edgechromium
 hiddenimports += ['pystray._win32', 'PIL._tkinter_finder', 'clr']
+hiddenimports += ['freeconnect.voicewatch']   # импортируется лениво из app.py
 
 a = Analysis(
     ['freeconnect_main.py'],

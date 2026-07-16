@@ -204,9 +204,18 @@ def collect_site_candidates(
     on_progress: Callable[[int, int, Strategy], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> list[StrategyScore]:
-    """Для гайд-режима голоса: генерит кандидатов и возвращает первые `want`, у кого
-    Discord открыт ПО САЙТАМ (TCP/TLS). Голос здесь НЕ проверяем — его глазами
-    подтвердит человек в живом Discord (единственный честный ground truth без залогина).
+    """Для гайд-режима голоса: генерит кандидатов, у кого Discord открыт ПО САЙТАМ
+    (TCP/TLS), и возвращает шорт-лист, ОТСОРТИРОВАННЫЙ по качеству: сперва полноценные
+    «All» (Discord+YouTube по сайтам), затем по задержке (быстрейшие первыми). Голос
+    здесь НЕ проверяем — его глазами подтвердит человек в живом Discord (единственный
+    честный ground truth без залогина).
+
+    Порядок важен: иначе человеку первым предлагался «первый попавшийся» кандидат —
+    был реальный баг, когда закрепляли стратегию с задержкой 1038 мс, хотя рядом лежала
+    172 мс, и через минуту голос уплывал в 5000 мс. Теперь первым идёт самый быстрый.
+
+    Собираем, пока не наберём `want` полноценных «All» (или не кончится бюджет), чтобы
+    у пользователя был запас стратегий для ручного переключения, а не одна.
 
     winws гасится в конце; выбранного кандидата вызывающий поднимает заново сам.
     """
@@ -226,11 +235,27 @@ def collect_site_candidates(
             disc = next((s for s in sc.services if s.service == "discord"), None)
             if disc and disc.sites_ok:
                 out.append(sc)
-                if len(out) >= want:
+                # Цель — набрать `want` именно «All» (Discord+YouTube по сайтам); их и
+                # предложим/сохраним первыми. Discord-only остаются запасом в хвосте.
+                if sum(1 for s in out if _all_sites_ok(s)) >= want:
                     break
     finally:
         eng.stop()
+    out.sort(key=_shortlist_sort_key)
     return out
+
+
+def _all_sites_ok(sc: StrategyScore) -> bool:
+    """Все целевые сервисы открыты хотя бы по сайтам (TCP/TLS). В гайд-режиме голос
+    подтверждает человек, поэтому «All» здесь = Discord+YouTube по сайтам."""
+    return len(sc.services) > 0 and all(s.sites_ok for s in sc.services)
+
+
+def _shortlist_sort_key(sc: StrategyScore):
+    """Сортировка шорт-листа: сперва «All», затем по задержке (меньше — раньше).
+    Кандидат без измеренной задержки уезжает в конец."""
+    lat = sc.avg_latency_ms
+    return (0 if _all_sites_ok(sc) else 1, lat if lat >= 0 else 1e9)
 
 
 def deep_search(

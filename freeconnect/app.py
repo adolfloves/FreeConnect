@@ -15,7 +15,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import webview
+try:
+    import webview
+except ImportError:   # pywebview нужен только в рантайме GUI (create_window/start);
+    webview = None    # для юнит-тестов/CI без GUI-зависимости модуль импортируется и так
 
 from . import __version__, config, paths, tester
 from .autosearch import StrategyScore, search
@@ -117,15 +120,38 @@ def _extract_exe_from_zip(zip_bytes: bytes, exe_name: str, dest) -> None:
             _sh.copyfileobj(src, out)
 
 
-def _pick_recovery_candidate(working: list[dict], current: str | None) -> str | None:
-    """Кандидат для авто-переключения при деградации голоса/Discord: первая стратегия
-    с живым Discord (discord_ok), кроме текущей. None — подходящих нет (тогда вызывающий
-    просто перезапустит текущую, а не уедет на YouTube-only)."""
-    for w in working:
-        name = w.get("name")
-        if name and name != current and w.get("discord_ok"):
-            return name
-    return None
+def _sc_all_sites_ok(sc) -> bool:
+    """Все целевые сервисы стратегии открыты хотя бы по сайтам (TCP/TLS)."""
+    svcs = getattr(sc, "services", [])
+    return bool(svcs) and all(s.sites_ok for s in svcs)
+
+
+def _is_discord_capable(w: dict) -> bool:
+    """Стратегия способна тянуть Discord-голос (для ручного переключения). Считаем
+    способной, если голос подтверждён (discord_ok), ИЛИ Discord открыт по сайтам
+    (discord_sites_ok — гайд-кандидаты), ИЛИ это встроенная стратегия с рабочим
+    Discord (discord>=2 из автоподбора, напр. ALT9). Так у кнопки есть реальный
+    выбор, а не только подтверждённая одна."""
+    return bool(w.get("discord_ok") or w.get("discord_sites_ok")
+                or (w.get("discord") or 0) >= 2)
+
+
+def _pick_switch_candidate(working: list[dict], current: str | None) -> str | None:
+    """Следующая Discord-способная стратегия ПОСЛЕ текущей (по кругу), кроме самой
+    текущей — для ручной кнопки «Сменить стратегию». Циклический обход, чтобы повторные
+    нажатия перебирали все варианты, а не возвращали один и тот же."""
+    caps = [w.get("name") for w in working
+            if w.get("name") and _is_discord_capable(w)]
+    if not caps:
+        return None
+    if current in caps:
+        i = caps.index(current)
+        for j in range(1, len(caps) + 1):
+            cand = caps[(i + j) % len(caps)]
+            if cand != current:
+                return cand
+        return None
+    return caps[0]
 
 
 def _score_to_item(sc: StrategyScore) -> dict:
@@ -188,6 +214,10 @@ class Api:
         )
         # DNS-over-HTTPS (опция, по умолчанию выкл): шифрует DNS, обходит DNS-подмену.
         self.doh = DoHManager(log=_log)
+        # Пассивный детектор голоса (эксперим., по умолчанию выкл): наблюдает реальный
+        # медиапоток Discord через WinDivert SNIFF и ловит односторонний/мёртвый голос,
+        # который STUN-монитор и watchdog не видят. Best-effort: сбой не рушит обход.
+        self._voicewatch = None
         self._searching = False
         self._recovering = False
         # Гайд-подтверждение голоса (ground truth от живого Discord): бэкенд включает
@@ -199,6 +229,9 @@ class Api:
         self._recover_count = 0        # сколько попыток восстановления подряд
         self.restart_before_switch = 2 # столько раз перезапускаем текущую, потом переключаемся
         self.recover_reset_after = 180.0  # если N сек всё ок — сбросить счётчик попыток
+        self._recover_tried: set[str] = set()  # опробованные в текущей серии (не биться меж двух)
+        self._recovery_paused_until = 0.0      # пауза после «перепробовал все» (антидребезг)
+        self.recovery_exhaust_pause = 120.0    # сколько молчать, перебрав весь пул
         # окно / трей / фон
         self._win = None
         self.tray = None
@@ -667,11 +700,12 @@ class Api:
             "game_filter": self.cfg.get("game_filter", False),
             "doh": self.cfg.get("doh", False),
             "voice_confirm": self.cfg.get("voice_confirm", False),
+            "voice_watch": self.cfg.get("voice_watch", False),
         }
 
     def set_setting(self, key: str, value) -> dict:
         if key not in ("autostart", "monitor", "auto_enable", "game_filter", "doh",
-                       "voice_confirm"):
+                       "voice_confirm", "voice_watch"):
             return self.get_settings()
         val = bool(value)
         if key == "autostart":
@@ -699,6 +733,16 @@ class Api:
                 self._start_doh_async()
             elif not val:
                 threading.Thread(target=self._stop_doh, daemon=True).start()
+        # Детектор голоса включаем/выключаем на лету, если обход уже работает.
+        if key == "voice_watch" and self.enabled:
+            if val:
+                self._start_voicewatch()
+            elif self._voicewatch is not None:
+                try:
+                    self._voicewatch.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._voicewatch = None
         return self.get_settings()
 
     def enable(self) -> dict:
@@ -730,6 +774,7 @@ class Api:
 
     def pick_strategy(self, name: str) -> dict:
         self.strategy_name = name
+        self._reset_recovery_state(grace=20.0)  # ручной выбор — фора от авто-ремонта
         self._save()
         return self.enable()
 
@@ -804,6 +849,79 @@ class Api:
         self._cancel.clear()
         threading.Thread(target=self._run_deep, daemon=True).start()
 
+    def refresh_strategies(self) -> None:
+        """Пере-тест уже сохранённых стратегий (без генерации): поднимаем каждую заново,
+        меряем доступность Discord/YouTube и задержку, затем пересортировываем список по
+        актуальному состоянию. Нужно, т.к. пинг/доступность у провайдера меняются во
+        времени, а список хранит замеры на момент подбора."""
+        if self._searching:
+            return
+        self._searching = True
+        self._cancel.clear()
+        threading.Thread(target=self._run_refresh, daemon=True).start()
+
+    def _run_refresh(self) -> None:
+        from .autosearch import evaluate_strategy
+        from .tester import DEFAULT_TARGETS
+        self._stop_monitors()
+        svcs = list(DEFAULT_TARGETS.keys())
+        items = list(self.working)
+        total = len(items)
+        prev_active = self.strategy_name
+        was_enabled = self.enabled
+        updated: list[dict] = []
+        try:
+            _log(f"=== REFRESH: пере-тест {total} стратегий ===")
+            for i, w in enumerate(items):
+                if self._cancel.is_set():
+                    break
+                name = w.get("name")
+                self._push("onSearchProgress", i, total, name or "?")
+                strat = self._find_strategy(name) if name else None
+                if not strat:
+                    updated.append(w)          # нет объекта стратегии — оставляем как есть
+                    continue
+                try:
+                    sc = evaluate_strategy(self.engine, strat, svcs)
+                except Exception as e:  # noqa: BLE001
+                    _log(f"refresh: «{name}» ошибка: {e}")
+                    updated.append(w)
+                    continue
+                it = _score_to_item(sc)
+                it["name"] = it["id"] = name
+                it["custom"] = w.get("custom", False)
+                # Подтверждённость голоса человеком сайт-замер не знает — не теряем её.
+                if w.get("voice_confirmed"):
+                    it["voice_confirmed"] = True
+                    it["discord_ok"] = True
+                self._push("onSearchResult", i, total, name,
+                           {"discord": it["discord"], "youtube": it["youtube"]})
+                updated.append(it)
+            # После «Стоп» непроверенные стратегии сохраняем как были (не теряем список).
+            done = {u.get("name") for u in updated}
+            updated += [w for w in items if w.get("name") not in done]
+        finally:
+            updated.sort(key=lambda w: (-self._strategy_rank(w),
+                                        w.get("latency") if w.get("latency") is not None else 10**9))
+            self.working = updated
+            # Пере-тест гонял движок по всем стратегиям — возвращаем ранее активную.
+            restored = False
+            if was_enabled and prev_active:
+                strat = self._find_strategy(prev_active)
+                if strat:
+                    try:
+                        self.engine.start(strat)
+                        self.strategy_name = prev_active
+                        self._start_monitors()
+                        restored = True
+                    except EngineError as e:  # noqa: BLE001
+                        _log(f"refresh: не вернуть активную «{prev_active}»: {e}")
+            if was_enabled and not restored:
+                self.enabled = False       # честно: движок стоит — не показываем «включено»
+            self._save()
+            self._searching = False
+            self._push("onSearchDone", self._state()["working"])
+
     def _run_deep(self) -> None:
         from . import deepsearch
         self._stop_monitors()
@@ -850,7 +968,7 @@ class Api:
         try:
             _log(f"=== DEEP SEARCH start (base={base.name}) ===")
             results = deepsearch.deep_search(
-                base, engine=self.engine, budget=90, stop_on_all=True,
+                base, engine=self.engine, budget=120, stop_on_all=True, min_all=5,
                 on_progress=on_progress, on_result=on_result, on_found=on_found,
                 cancel=self._cancel,
             )
@@ -859,15 +977,23 @@ class Api:
         except Exception as e:  # noqa: BLE001
             self._push("onError", f"Ошибка глубокого поиска: {e}")
 
+        cancelled = self._cancel.is_set()
         working = [_score_to_item(r) for r in results if r.working]
         names = {w["name"] for w in working}
+        # Найденное всегда добавляем в список (даже при «Стоп» — не сбрасываем перебор).
         self.working = working + [w for w in self.working if w["name"] not in names]
-        if working:
-            # working отсортирован по баллу (services_ok, затем качество голоса) —
-            # working[0] это лучшая All с самым быстрым/стабильным голосом.
+        if working and not cancelled:
+            # Полный проход завершён: working отсортирован по баллу (services_ok, затем
+            # качество голоса) — working[0] это лучшая All с быстрым/стабильным голосом.
             self.strategy_name = working[0]["name"]
             self._save()
             self.enable()
+        else:
+            # «Стоп»: сохраняем найденное в списке, но НЕ трогаем активную стратегию —
+            # иначе ранняя остановка после одной YouTube-only перекидывала на неё
+            # (тот баг: «нашёл одну ютуб-стратегию и переключил на неё»). Пусть человек
+            # выберет сам; текущий рабочий обход не рушим.
+            self._save()
         self._searching = False
         self._push("onSearchDone", self._state()["working"])
 
@@ -882,11 +1008,25 @@ class Api:
         def on_progress(i, total, cand):
             self._push("onSearchProgress", i, total, cand.name)
 
+        # Бутстрап: СРАЗУ поднимаем обход на известной рабочей стратегии, чтобы Discord
+        # мог открыться и достучаться до канала ещё ДО того, как мы попросим человека
+        # зайти в голосовой (иначе — тот самый тупик: «зайди в канал», а канал не
+        # подключается, потому что обход ещё не включён). Стратегию НЕ сохраняем и НЕ
+        # фиксируем — это лишь временный обход на время подбора; collect_site_candidates
+        # ниже переиспользует этот же движок и продолжит перебор.
+        boot = (self._find_strategy(self.strategy_name) if self.strategy_name else None) or base
+        try:
+            self.engine.start(boot)
+            self._push("onGuidedBootstrap", {"name": getattr(boot, "name", "")})
+            _log(f"guided: бутстрап-обход «{getattr(boot, 'name', '?')}» — Discord может открыться")
+        except EngineError as e:
+            _log(f"guided: бутстрап не поднялся: {e}")
+
         shortlist: list = []
         try:
             _log("=== GUIDED VOICE: сбор шорт-листа (Discord по сайтам) ===")
             shortlist = deepsearch.collect_site_candidates(
-                base, engine=self.engine, want=5, budget=90,
+                base, engine=self.engine, want=5, budget=120,
                 on_progress=on_progress, cancel=self._cancel)
         except Exception as e:  # noqa: BLE001
             self._push("onError", f"Ошибка поиска: {e}")
@@ -901,36 +1041,60 @@ class Api:
             self._push("onVoiceConfirmDone", {"confirmed": False, "empty": True})
             return
 
+        # Сохраняем ВЕСЬ шорт-лист как пул своих стратегий сразу. Даже неподтверждённые
+        # нужны для ручной кнопки «Сменить стратегию»: раньше сохранялась только
+        # подтверждённая — и переключаться при мёртвом голосе было НЕ НА ЧТО.
+        # discord_ok=False (голос ещё не подтверждён человеком), но discord_sites_ok=True.
+        pool: list[dict] = []
+        saved_strats: list = []
+        for sc in shortlist:
+            label = "All" if _sc_all_sites_ok(sc) else "Discord"
+            saved = custom.add_custom(sc.strategy.args,
+                                      base_name=(base.name if base else "auto"),
+                                      label=label)
+            saved_strats.append(saved)
+            item = _score_to_item(sc)
+            item["name"] = item["id"] = saved.name
+            item["custom"] = True
+            item["discord_ok"] = False
+            item["discord_sites_ok"] = True
+            pool.append(item)
+        names = {p["name"] for p in pool}
+        self.working = pool + [w for w in self.working if w["name"] not in names]
+        self._save()
+
         confirmed = None
         total = len(shortlist)
         for idx, sc in enumerate(shortlist):
             if self._cancel.is_set():
                 break
-            cand = sc.strategy
+            saved = saved_strats[idx]
+            strat = self._find_strategy(saved.name) or sc.strategy
             try:
-                self.engine.start(cand)   # поднимаем winws; застрявший Discord доберётся
+                self.engine.start(strat)  # поднимаем winws; застрявший Discord доберётся
             except EngineError as e:
-                _log(f"guided: не поднять кандидата «{cand.name}»: {e}")
+                _log(f"guided: не поднять кандидата «{saved.name}»: {e}")
                 continue
             self._vc_verdict = None
             self._vc_event.clear()
             self._push("onVoiceConfirmProbe", {"index": idx + 1, "total": total,
-                                               "name": cand.name})
-            _log(f"guided: кандидат {idx + 1}/{total} «{cand.name}» — жду вердикт человека")
+                                               "name": saved.name})
+            lat = pool[idx].get("latency")
+            _log(f"guided: кандидат {idx + 1}/{total} «{saved.name}» ({lat}мс) — жду вердикт")
             got = self._vc_event.wait(timeout=90)   # даём человеку время увидеть и нажать
             if self._cancel.is_set():
                 break
             if got and self._vc_verdict:
-                saved = custom.add_custom(cand.args,
-                                          base_name=(base.name if base else "auto"),
-                                          label="голос подтверждён")
-                item = _score_to_item(sc)
-                item["name"] = item["id"] = saved.name
-                item["custom"] = True
-                item["discord_ok"] = True   # человек подтвердил живой голос
-                confirmed = item
+                # Человек подтвердил живой голос — метим этого кандидата и делаем активным.
+                for p in self.working:
+                    if p["name"] == saved.name:
+                        p["discord_ok"] = True        # человек подтвердил живой голос
+                        p["voice_confirmed"] = True
+                        confirmed = p
+                        break
                 self.strategy_name = saved.name
-                self.working = [item] + [w for w in self.working if w["name"] != saved.name]
+                self.working = ([confirmed] +
+                                [w for w in self.working if w["name"] != saved.name])
                 self._save()
                 _log(f"guided: ПОДТВЕРЖДЁН голос на «{saved.name}»")
                 break
@@ -943,6 +1107,8 @@ class Api:
             self._start_doh_async()
             self._push("onExternalState", self._state())
         else:
+            # Никого не подтвердили — гасим движок, но пул сохранён: пользователь может
+            # запустить любую из стратегий вручную (кнопкой «Сменить стратегию»).
             try:
                 self.engine.stop()
             except Exception:  # noqa: BLE001
@@ -1015,10 +1181,38 @@ class Api:
         if not self.cfg.get("voice_confirm", False):
             self.monitor.start()
         self.watchdog.start()
+        # Пассивный SNIFF-детектор голоса (эксперим.). Работает и вместе с voice_confirm:
+        # там STUN-монитор выключен, а этот видит реальный медиапоток. Best-effort.
+        if self.cfg.get("voice_watch", False):
+            self._start_voicewatch()
+
+    def _start_voicewatch(self) -> None:
+        if self._voicewatch is not None:
+            return
+        try:
+            from .voicewatch import VoiceWatch
+            self._voicewatch = VoiceWatch(on_dead=self._on_voice_dead, log=_log)
+            self._voicewatch.start()
+        except Exception as e:  # noqa: BLE001
+            _log(f"voicewatch: не поднять (ок): {e}")
+            self._voicewatch = None
 
     def _stop_monitors(self) -> None:
         self.monitor.stop()
         self.watchdog.stop()
+        if self._voicewatch is not None:
+            try:
+                self._voicewatch.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._voicewatch = None
+
+    def _on_voice_dead(self, reason: str) -> None:
+        # Детектор голоса увидел односторонний/мёртвый поток. Сообщаем UI (с подсказкой
+        # про регион — часть таких смертей это RTC-сервер, а не стратегия) и запускаем
+        # тот же авто-ремонт, что и STUN-всплеск/watchdog (общий cooldown/счётчик).
+        self._push("onVoiceDead", {"reason": reason})
+        self._trigger_recovery(f"voicewatch: {reason}")
 
     def _start_doh_async(self) -> None:
         """Поднять DoH в фоне (смена DNS через PowerShell занимает ~1с — не тормозим UI)."""
@@ -1061,11 +1255,15 @@ class Api:
             _log(f"{reason}, но восстановление off (enabled/monitor)")
             return
         now = time.monotonic()
+        if now < self._recovery_paused_until:
+            return   # только что перебрали весь пул — держим паузу, не дребезжим
         if self._recovering or (now - self._last_recovery) < self.recovery_cooldown:
             return
-        # Если проблем давно не было — считаем путь здоровым, сбрасываем счётчик.
+        # Если проблем давно не было — считаем путь здоровым, сбрасываем счётчик и
+        # список опробованных (следующая серия начнётся с чистого перебора).
         if now - self._last_recovery > self.recover_reset_after:
             self._recover_count = 0
+            self._recover_tried = set()
         self._recovering = True
         self._last_recovery = now
         self._recover_count += 1
@@ -1092,14 +1290,19 @@ class Api:
             self._recovering = False
 
     def _switch_to_next_working(self) -> None:
-        """Переключиться на другую стратегию, УМЕЮЩУЮ Discord-голос.
+        """Переключиться на следующую Discord-способную стратегию — ПО КРУГУ и по ВСЕМУ
+        пулу, включая встроенные (ALT9, FAKE TLS AUTO ALT3 и т.п.).
 
-        Восстановление запускается при деградации голоса/Discord, поэтому переезжать
-        на YouTube-only стратегию бессмысленно (ровно тот баг: «сломался голос — а нас
-        перекинуло на ютуб»). Берём только кандидатов с живым Discord (discord_ok),
-        исключая текущую. Если таких нет — просто перезапускаем текущую, не трогая
-        рабочий YouTube."""
-        nxt = _pick_recovery_candidate(self.working, self.strategy_name)
+        Раньше брали «первую с discord_ok, кроме текущей» — а discord_ok=True только у
+        подтверждённых человеком, поэтому восстановление вечно билось между двумя
+        сгенерированными (#13↔#11) и НЕ добиралось до встроенной FAKE TLS AUTO ALT3,
+        которая реально держала голос. Теперь идём циклически (_pick_switch_candidate,
+        широкий _is_discord_capable) и запоминаем опробованные: перебрав весь пул без
+        успеха, сообщаем юзеру (проблема, похоже, на стороне RTC-сервера — сменить регион)
+        и держим паузу, чтобы не молотить бесконечно."""
+        caps = [w.get("name") for w in self.working
+                if w.get("name") and _is_discord_capable(w)]
+        nxt = _pick_switch_candidate(self.working, self.strategy_name)
         if not nxt:
             strat = self._find_strategy(self.strategy_name) if self.strategy_name else None
             if strat:
@@ -1110,12 +1313,65 @@ class Api:
         strat = self._find_strategy(nxt)
         if not strat:
             return
-        _log(f"recovery: ПЕРЕКЛЮЧЕНИЕ «{self.strategy_name}» -> «{nxt}» (живой Discord)")
+        _log(f"recovery: ПЕРЕКЛЮЧЕНИЕ «{self.strategy_name}» -> «{nxt}» (Discord-способная)")
         self._push("onRecovering")
         self.engine.start(strat)
+        if self.strategy_name:
+            self._recover_tried.add(self.strategy_name)
+        self._recover_tried.add(nxt)
         self.strategy_name = nxt
+        # Перебрали весь пул Discord-способных и голос так и не поднялся — это уже не
+        # стратегия, а путь/сервер. Сообщаем и берём паузу (антидребезг).
+        if caps and self._recover_tried.issuperset(caps):
+            _log("recovery: перебран весь пул, голос не держится — пауза + подсказка про регион")
+            self._push("onRecoveryExhausted")
+            self._recover_tried = set()
+            self._recovery_paused_until = time.monotonic() + self.recovery_exhaust_pause
         self._save()
         self._push("onExternalState", self._state())
+
+    def manual_voice_switch(self) -> dict:
+        """Ручное переключение по кнопке «Голос лагает — сменить стратегию».
+
+        Надёжный автодетект смерти именно Discord-голоса без залогина невозможен
+        (нет IP RTC-сервера/SSRC; STUN до Google ≠ голос Discord). Поэтому источник
+        правды — уши человека: один клик переключает на следующую Discord-способную
+        стратегию (по кругу), не заставляя заново проходить весь подбор.
+
+        Возвращает {'switched': bool, 'name': str, 'reason': str}.
+        """
+        # Берём полный список (свои + встроенные), как его видит UI.
+        working = self._state()["working"]
+        nxt = _pick_switch_candidate(working, self.strategy_name)
+        if not nxt:
+            _log("manual switch: нет других Discord-способных стратегий")
+            return {"switched": False, "name": "", "reason": "no_candidates"}
+        strat = self._find_strategy(nxt)
+        if not strat:
+            return {"switched": False, "name": "", "reason": "not_found"}
+        _log(f"MANUAL SWITCH: «{self.strategy_name}» -> «{nxt}»")
+        try:
+            self.engine.start(strat)
+        except EngineError as e:
+            self._push("onError", str(e))
+            return {"switched": False, "name": "", "reason": "engine"}
+        self.strategy_name = nxt
+        self.enabled = True
+        self._reset_recovery_state(grace=20.0)  # ручной выбор — не сбивать его авто-ремонтом
+        self._start_monitors()
+        if self.tray:
+            self.tray.set_active(True)
+        self._save()
+        self._push("onExternalState", self._state())
+        return {"switched": True, "name": nxt, "reason": ""}
+
+    def _reset_recovery_state(self, grace: float = 0.0) -> None:
+        """Сброс авто-восстановления (при ручном выборе стратегии). grace — короткая
+        фора, чтобы залётное «голос мёртв» от ПРЕДЫДУЩЕЙ стратегии сразу не сбило только
+        что выбранную."""
+        self._recover_tried = set()
+        self._recover_count = 0
+        self._recovery_paused_until = time.monotonic() + grace if grace else 0.0
 
 
 _SINGLE_INSTANCE_HANDLE = None

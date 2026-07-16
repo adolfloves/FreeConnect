@@ -154,6 +154,13 @@
       <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9z"/></svg>
       Глубокий поиск — создать свою стратегию
     </button>
+    <!-- Ручное восстановление голоса: авто-детект смерти именно Discord-голоса без
+         залогина невозможен, поэтому даём один клик — переключить на следующую
+         рабочую Discord-стратегию. Видна, когда обход включён. -->
+    <button class="btn ghost small" id="voiceSwitchBtn" style="display:none">
+      <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 6V3L8 7l4 4V8a4 4 0 1 1-4 4H6a6 6 0 1 0 6-6z"/></svg>
+      Голос лагает — сменить стратегию
+    </button>
   </section>
 </main>
 
@@ -179,13 +186,13 @@
     <div class="found-list" id="foundList"></div>
     <!-- Гайд-подтверждение голоса: показывается, когда бэкенд перебирает кандидатов -->
     <div class="vc-panel" id="vcPanel" style="display:none">
-      <div class="vc-hint">Посмотри в Discord: в голосовом канале голос <b>подключился</b>?</div>
+      <div class="vc-hint">Обход включён — <b>зайди в голосовой канал</b> Discord. Голос <b>подключился</b>?</div>
       <div class="vc-actions">
         <button class="btn primary" id="vcYes">✓ Голос подключился!</button>
         <button class="btn ghost small" id="vcNext">Не подключился — дальше</button>
       </div>
     </div>
-    <button class="btn ghost small" id="cancelSearchBtn">Отменить</button>
+    <button class="btn ghost small" id="cancelSearchBtn">Стоп</button>
   </div>
 </div>
 
@@ -194,17 +201,17 @@
   <div class="modal-card">
     <div class="modal-head"><b>Точная проверка голоса</b></div>
     <div class="modal-body">
-      <p>Сейчас подберём стратегию и проверим голос по-настоящему — твоими глазами.</p>
+      <p>Сейчас <b>включим обход</b> и подберём стратегию — а ты подтвердишь голос своими ушами.</p>
       <ol style="padding-left:18px;line-height:1.7">
-        <li>Открой <b>Discord</b>.</li>
-        <li>Зайди в любой <b>голосовой канал</b> (пусть висит «Подключение…»).</li>
-        <li>Вернись сюда и жми <b>Готово</b>.</li>
+        <li>Просто держи <b>Discord</b> запущенным. В канал заходить <b>пока не нужно</b>.</li>
+        <li>Жми <b>Начать</b> — мы включим обход и начнём перебор стратегий.</li>
+        <li>Когда попросим — <b>зайди в голосовой канал</b>. Обход уже будет включён, и голос подключится.</li>
       </ol>
-      <p class="settings-note">Мы будем перебирать стратегии. Как только в Discord голос подключится — нажмёшь кнопку, и мы закрепим эту стратегию.</p>
+      <p class="settings-note">Как только под очередной стратегией голос <b>реально подключится</b> (услышишь/увидишь «Голос подключён») — нажмёшь кнопку, и мы закрепим именно эту стратегию.</p>
     </div>
     <div class="modal-foot">
       <button class="btn ghost small" id="voiceSetupCancel">Отмена</button>
-      <button class="btn primary" id="voiceSetupDone">Готово</button>
+      <button class="btn primary" id="voiceSetupDone">Начать</button>
     </div>
   </div>
 </div>
@@ -248,6 +255,10 @@
       <label class="toggle-row">
         <span>Точная проверка голоса<small class="toggle-sub">при создании своей стратегии попросит зайти в голосовой канал Discord и подтвердить, что голос реально подключился — без ложных «работает»</small></span>
         <span class="switch"><input type="checkbox" id="optVoiceConfirm"><span class="slider"></span></span>
+      </label>
+      <label class="toggle-row">
+        <span>Следить за живостью голоса <span class="exp-tag">эксперимент</span><small class="toggle-sub">во время звонка наблюдает реальный поток Discord: если голос «замолчал» (односторонний/мёртвый) — сам чинит и подскажет сменить регион канала</small></span>
+        <span class="switch"><input type="checkbox" id="optVoiceWatch"><span class="slider"></span></span>
       </label>
       <button class="btn ghost" id="replayTour" style="width:100%;margin-top:8px">Показать обучение снова</button>
       <button class="btn ghost" id="sendLogs" style="width:100%;margin-top:8px">Собрать логи для поддержки</button>
