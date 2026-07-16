@@ -826,11 +826,39 @@ class Api:
             "sub_url": self.cfg.get("vpn_sub_url", ""),
         }
 
-    def _fetch_subscription(self, url: str) -> str:
+    # Разные sub-сервисы отдают конфиг ТОЛЬКО «знакомым» клиентам и режут чужой
+    # User-Agent (напр. skippnet: наш UA → HTTP 445, а под Streisand отдаёт полный
+    # xray-JSON). Перебираем распространённые UA и берём ответ, из которого удалось
+    # вытащить больше всего серверов. Streisand первым — под него отдают Happ-JSON.
+    _SUB_UAGENTS = ["Streisand", "v2rayNG/1.9.5", "Happ/1.11.0", "clash-verge/1.5",
+                    "sing-box", "FreeConnect"]
+
+    def _fetch_subscription_servers(self, url: str):
+        """Скачивает подписку, перебирая User-Agent; возвращает (text, servers) с
+        максимумом распознанных серверов. Бросает последнюю сетевую ошибку, если
+        ни один UA не ответил."""
         import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "FreeConnect"})
-        with urllib.request.urlopen(req, timeout=12) as r:  # noqa: S310 (доверенный ввод юзера)
-            return r.read().decode("utf-8", "replace")
+        best_text, best = "", []
+        last_err = None
+        for ua in self._SUB_UAGENTS:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": ua})
+                with urllib.request.urlopen(req, timeout=12) as r:  # noqa: S310 (ввод юзера)
+                    text = r.read().decode("utf-8", "replace")
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                continue
+            try:
+                servers = vpn.parse_servers(text)
+            except Exception:  # noqa: BLE001
+                servers = []
+            if len(servers) > len(best):
+                best_text, best = text, servers
+            if len(best) >= 2:   # достаточно — не гоняем остальные UA
+                break
+        if not best_text and last_err is not None:
+            raise last_err
+        return best_text, best
 
     def vpn_import(self, url: str = "", json_text: str = "") -> dict:
         """Импорт подписки: скачать по ссылке ИЛИ разобрать вставленный JSON.
@@ -839,9 +867,14 @@ class Api:
         json_text = (json_text or "").strip()
         if json_text:
             text = json_text
+            try:
+                servers = vpn.parse_servers(text)
+            except Exception as e:  # noqa: BLE001
+                _log(f"vpn: не разобрал вставленный конфиг: {e}")
+                return {**self.vpn_get_state(), "ok": False, "error": "Не разобрал конфиг — формат не распознан"}
         elif url:
             try:
-                text = self._fetch_subscription(url)
+                text, servers = self._fetch_subscription_servers(url)
             except Exception as e:  # noqa: BLE001
                 _log(f"vpn: скачать подписку не вышло: {e}")
                 return {**self.vpn_get_state(), "ok": False,
@@ -849,11 +882,6 @@ class Api:
         else:
             return {**self.vpn_get_state(), "ok": False, "error": "Вставь ссылку-подписку или конфиг JSON"}
 
-        try:
-            servers = vpn.parse_servers(text)
-        except Exception as e:  # noqa: BLE001
-            _log(f"vpn: не разобрал подписку: {e}")
-            return {**self.vpn_get_state(), "ok": False, "error": "Не разобрал подписку — формат не распознан"}
         if not servers:
             return {**self.vpn_get_state(), "ok": False,
                     "error": "В подписке нет подходящих зарубежных серверов (Hysteria2/VLESS/Trojan)"}

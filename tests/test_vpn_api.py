@@ -162,6 +162,53 @@ class TestVpnApi(unittest.TestCase):
         self.assertEqual(api.singbox.stop_calls, 1)
         self.assertFalse(api.cfg["vpn_enabled"])
 
+    def test_import_url_picks_ua_with_most_servers(self):
+        """sub-сервис режет чужой UA (445) и полный конфиг отдаёт только «своему»
+        (напр. Streisand). Импорт по ссылке перебирает UA и берёт лучший ответ."""
+        import io
+        import urllib.request
+        good = _profiles()   # JSON с 2 странами
+        calls = []
+
+        class _Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close()
+
+        def fake_urlopen(req, timeout=0):
+            ua = req.headers.get("User-agent") or req.get_header("User-agent")
+            calls.append(ua)
+            if ua == "Streisand":
+                return _Resp(good.encode("utf-8"))
+            if ua == "v2rayNG/1.9.5":
+                return _Resp(b"garbage-not-a-config")   # 200, но не парсится
+            raise urllib.error.HTTPError(req.full_url, 445, "blocked", {}, None)
+
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            api = _api()
+            st = api.vpn_import(url="https://sub.example/sub/x")
+        finally:
+            urllib.request.urlopen = orig
+        self.assertTrue(st["ok"])
+        self.assertTrue(st["imported"])
+        self.assertIn("Streisand", calls)              # рабочий UA перепробован
+        self.assertGreaterEqual(len(st["servers"]), 2)
+
+    def test_import_url_all_uas_fail(self):
+        import urllib.request
+        def fake_urlopen(req, timeout=0):
+            raise urllib.error.URLError("no network")
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            api = _api()
+            st = api.vpn_import(url="https://sub.example/sub/x")
+        finally:
+            urllib.request.urlopen = orig
+        self.assertFalse(st["ok"])
+        self.assertIn("error", st)
+
     def test_select_while_running_restarts(self):
         api = _api()
         api.vpn_import(json_text=_profiles())

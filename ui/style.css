@@ -517,4 +517,9 @@ body.frameless .splash:not(.hide) ~ .win-controls{opacity:0;pointer-events:none}
 .vpn-badge.show{display:flex}
 .vpn-badge-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent2);
   box-shadow:0 0 8px var(--accent2);animation:blink 1.6s ease-in-out infinite}
-.vpn-main-toggle{margin-top:4px;border-top:1px solid var(--panel-brd);padding-top:14px}
+/* Главный тумблер всегда прижат к низу окна (sticky), чтобы не терялся под длинным
+   списком серверов; скроллится только содержимое над ним. */
+.vpn-main-toggle{position:sticky;bottom:-16px;z-index:2;margin:6px -20px -16px;
+  padding:14px 20px;background:#0b0f1c;border-top:1px solid var(--panel-brd)}
+/* Окну VPN даём больше высоты — серверов может быть много */
+#vpnModal .modal-card{max-height:88vh}
