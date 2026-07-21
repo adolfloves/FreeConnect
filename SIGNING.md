@@ -16,7 +16,7 @@ Foundation** (программа бесплатной подписи для open
    Готовый текст для формы (можно вставить как есть):
 
    > **Project name:** FreeConnect
-   > **Repository:** https://github.com/adolfloves/FreeConnect
+   > **Repository:** https://github.com/cold-hell/FreeConnect
    > **License:** MIT
    > **Description:** FreeConnect is a free, open-source Windows GUI wrapper
    > around the zapret DPI-bypass engine that restores access to Discord and

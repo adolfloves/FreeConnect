@@ -97,6 +97,34 @@ class TestMirrorFallback(unittest.TestCase):
         self.assertIn("/zipball/", out["url"])
         self.assertEqual(out["exe"], "FreeConnect-Setup.exe")
 
+    def test_falls_back_to_mirror_when_github_answers_but_has_no_release(self):
+        """GitHub открывается, но релиза нет (репозиторий переименован/переехал, сбой
+        API). Раньше это молча гасило обновления — теперь спрашиваем зеркало, оно от
+        имени аккаунта на GitHub не зависит."""
+        au.github_reachable = lambda timeout=4.0: True     # GitHub доступен...
+        au.MIRROR_LATEST = "https://codeload.example/zipball/refs/heads/main"
+        au.__version__ = "0.1.9"
+        blob = _zip_with_latest(
+            {"version": "v0.1.10",
+             "zipball": "https://codeload.example/zipball/refs/heads/dist",
+             "exe": "FreeConnect-Setup.exe", "notes": ""})
+
+        class _Resp(io.BytesIO):
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): self_.close()
+
+        def _open(req, timeout=0):
+            url = req.full_url if hasattr(req, "full_url") else req
+            if url == au.MIRROR_LATEST:
+                return _Resp(blob)
+            raise OSError("404 — репозиторий по старому имени не найден")
+
+        au.urllib.request.urlopen = _open
+        out = au.check(timeout=1.0)
+        self.assertEqual(out["source"], "mirror")   # подстраховались зеркалом
+        self.assertTrue(out["available"])
+        self.assertEqual(out["version"], "v0.1.10")
+
     def test_mirror_not_configured_reports_error(self):
         au.github_reachable = lambda timeout=4.0: False
         au.MIRROR_LATEST = ""

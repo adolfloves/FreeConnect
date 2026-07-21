@@ -20,7 +20,7 @@ import urllib.request
 from . import __version__
 
 # Репозиторий на GitHub (owner/repo). Заполняется при публикации.
-GITHUB_REPO = "adolfloves/FreeConnect"
+GITHUB_REPO = "cold-hell/FreeConnect"
 _API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 # Лёгкая проверка «жив ли GitHub у пользователя» (сам сайт, а не только API —
 # провайдер обычно режет по домену целиком).
@@ -158,6 +158,11 @@ def check(timeout: float = 8.0) -> dict:
     страницу релиза. Если GitHub у пользователя недоступен — берём данные с зеркала.
     """
     if github_reachable(timeout=min(4.0, timeout)):
-        return _check_github(timeout)
-    # GitHub не открывается у пользователя (блокировка провайдера) — идём на зеркало.
+        out = _check_github(timeout)
+        if out.get("version"):
+            return out
+        # GitHub открывается, но версии нет: репозиторий переименован/переехал, сбой
+        # API. Молчать нельзя — иначе обновления тихо перестают приходить. Идём на
+        # зеркало: оно на другом сервисе и от имени аккаунта на GitHub не зависит.
+    # GitHub не открывается у пользователя (блокировка провайдера) — тоже зеркало.
     return _check_mirror(timeout)
