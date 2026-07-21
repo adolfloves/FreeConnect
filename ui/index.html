@@ -104,6 +104,9 @@
     <div class="vpn-badge" id="vpnBadge" title="Весь трафик Discord идёт через твой VPN">
       <span class="vpn-badge-dot"></span>Discord через VPN
     </div>
+    <div class="vpn-badge" id="tgBadge" title="Telegram идёт через локальный прокси">
+      <span class="vpn-badge-dot"></span>Telegram через прокси
+    </div>
   </section>
 
   <!-- Статусы сервисов -->
@@ -266,6 +269,12 @@
         <span class="se-arrow">›</span>
       </button>
 
+      <!-- Продвинутое: вход в отдельное окно обхода Telegram -->
+      <button class="settings-entry" id="openTg">
+        <span class="se-main">Обход Telegram<small class="toggle-sub">разблокировать Telegram без VPN — локальный прокси через веб-вход Telegram</small></span>
+        <span class="se-arrow">›</span>
+      </button>
+
       <button class="btn ghost" id="replayTour" style="width:100%;margin-top:8px">Показать обучение снова</button>
       <button class="btn ghost" id="sendLogs" style="width:100%;margin-top:8px">Собрать логи для поддержки</button>
       <div class="settings-note" id="logsNote">winws.exe часто ложно определяется антивирусом — это нормально для обхода блокировок.</div>
@@ -306,6 +315,47 @@
       <label class="toggle-row vpn-main-toggle">
         <span>Весь Discord через VPN<small class="toggle-sub">включится и будет держаться, пока не выключишь</small></span>
         <span class="switch"><input type="checkbox" id="optVpnOn"><span class="slider"></span></span>
+      </label>
+    </div>
+  </div>
+</div>
+
+<!-- Окно обхода Telegram (открывается из настроек) -->
+<div class="modal" id="tgModal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title">Обход Telegram</div>
+      <button class="icon-btn" id="closeTg">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="vpn-status" id="tgStatus"><span class="vpn-dot"></span><span id="tgStatusText">Выключен</span></div>
+
+      <div class="vpn-section">
+        <div class="settings-note">Заворачивает Telegram в его же веб-вход (web.telegram.org) — работает без VPN и подписок. Нажми «Настроить автоматически», и Telegram сам предложит добавить прокси.</div>
+        <button class="btn primary" id="tgAutoBtn" style="width:100%;margin-top:10px">Настроить автоматически</button>
+        <div class="settings-note" id="tgManual" style="margin-top:8px">Вручную: Telegram → Настройки → Продвинутые → Тип соединения → SOCKS5, <b id="tgManualAddr">127.0.0.1:1080</b></div>
+      </div>
+
+      <div class="tg-warn" id="tgAutostartWarn" hidden>
+        <div><b>Включи автозапуск FreeConnect</b><br>Telegram настроен ходить через нашу
+          программу — если она не запущена, Telegram работать не будет.</div>
+        <button class="btn" id="tgAutostartBtn">Включить автозапуск</button>
+      </div>
+
+      <div class="vpn-section">
+        <button class="btn" id="tgCheckBtn" style="width:100%">Проверить обход Telegram</button>
+        <div class="tg-diag" id="tgDiag" hidden>
+          <div class="tg-diag-verdict" id="tgDiagVerdict"></div>
+          <div class="tg-diag-rows" id="tgDiagRows"></div>
+          <div class="settings-note" id="tgDiagHint"></div>
+        </div>
+        <button class="btn" id="tgFindBtn" style="width:100%;margin-top:8px" hidden>Найти рабочий адрес</button>
+        <div class="settings-note" id="tgFindProgress" hidden></div>
+      </div>
+
+      <label class="toggle-row vpn-main-toggle">
+        <span>Обход Telegram включён<small class="toggle-sub">пока выключен — Telegram работать не будет</small></span>
+        <span class="switch"><input type="checkbox" id="optTgOn"><span class="slider"></span></span>
       </label>
     </div>
   </div>
